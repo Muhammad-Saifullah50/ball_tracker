@@ -1,55 +1,203 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+  SYNC IMPACT REPORT
+  ==================
+  Version change: 0.0.0 (template) -> 1.0.0
+  Bump rationale: MAJOR - initial constitution replacing all template
+                  placeholders with project-specific principles.
+
+  Modified principles (template placeholder -> concrete):
+    [PRINCIPLE_1_NAME] -> I. Accuracy-First
+    [PRINCIPLE_2_NAME] -> II. Fairness & Transparency
+    [PRINCIPLE_3_NAME] -> III. Real-Time Performance
+    [PRINCIPLE_4_NAME] -> IV. Simplicity & Accessibility
+    [PRINCIPLE_5_NAME] -> V. Modularity
+    [PRINCIPLE_6_NAME] -> VI. Offline-First
+    (new)              -> VII. Configurable Rules Engine
+    (new)              -> VIII. Graceful Degradation
+
+  Added sections:
+    - Test-Driven Development (NON-NEGOTIABLE)
+      - Red-Green-Refactor Cycle
+      - Testing Requirements (Unit, Integration, CV Model, Decision Engine)
+      - Test Coverage
+      - Test Data
+    - Coding Standards
+      - Language & Style
+      - Naming Conventions
+      - Documentation
+      - Code Organization
+      - Error Handling
+      - Version Control
+      - Performance Standards
+    - Data & Privacy
+
+  Removed sections:
+    - [SECTION_2_NAME] placeholder (replaced by TDD + Coding Standards)
+    - [SECTION_3_NAME] placeholder (replaced by Coding Standards subsections)
+
+  Templates requiring updates:
+    - .specify/templates/plan-template.md         -> OK (no changes needed)
+    - .specify/templates/spec-template.md          -> OK (no changes needed)
+    - .specify/templates/tasks-template.md         -> OK (no changes needed)
+    - .specify/templates/checklist-template.md     -> OK (no changes needed)
+    - .specify/templates/adr-template.md           -> OK (no changes needed)
+    - .claude/commands/*.md                        -> OK (no changes needed)
+
+  Deferred items: None
+-->
+
+# Cricket Ball Tracker Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Accuracy-First
+- Ball detection accuracy is the foundation — if tracking is wrong, decisions are wrong.
+- False positives (detecting wrong objects as ball) are worse than false negatives (missing a frame).
+- Decision confidence scores must be transparent — never present uncertain results as definitive.
+- All trajectory predictions must include margin of error.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Fairness & Transparency
+- Every decision must be explainable with visual evidence (trajectory overlay, impact point, predicted path).
+- No "black box" decisions — players must see *why* a decision was made.
+- All custom rules must be agreed upon *before* a match starts.
+- The app provides evidence; players can override any automated decision.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Real-Time Performance
+- Ball tracking must run at minimum 30fps, ideally 60fps.
+- Replay must be available within seconds of an appeal.
+- Prioritize processing speed over visual polish.
+- System must not introduce lag that disrupts gameplay flow.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Simplicity & Accessibility
+- This is a home cricket setup, not a professional stadium.
+- Minimal hardware requirements (1-2 consumer cameras).
+- Easy setup — should take minutes, not hours.
+- Non-technical users must be able to operate the app without training.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Modularity
+- Detection, tracking, decision engine, and replay are independent modules.
+- Custom rules engine must be pluggable — different groups can define different rules.
+- Camera configurations must be flexible and support different setups.
+- Each module must have a clear interface contract.
 
-### [PRINCIPLE_6_NAME]
+### VI. Offline-First
+- Must work without internet connection (home/backyard setting).
+- All processing done locally on the user's machine.
+- No cloud dependency for core features.
+- Optional cloud sync for sharing replays is acceptable but never required.
 
+### VII. Configurable Rules Engine
+- LBW parameters must be adjustable (impact zone tolerance, height threshold).
+- Caught behind detection sensitivity must be tunable.
+- Rule presets available for different skill levels (kids, adults, competitive).
+- Rules are saved per-session and can be exported/imported.
 
-[PRINCIPLE__DESCRIPTION]
+### VIII. Graceful Degradation
+- If one camera fails, system continues with reduced accuracy and a clear warning.
+- If tracking loses the ball, indicate uncertainty rather than guessing.
+- Poor lighting or conditions trigger warnings, not wrong decisions.
+- System never crashes silently — all failures are surfaced to the user.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Test-Driven Development (NON-NEGOTIABLE)
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### Red-Green-Refactor Cycle
+- **Red**: Tests are written FIRST and must fail before any implementation begins.
+- **Green**: Write the minimum code necessary to make the failing tests pass.
+- **Refactor**: Clean up code while keeping all tests green.
+- This cycle is strictly enforced for every feature and bug fix.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+### Testing Requirements
+- **Unit Tests**: Every function and module must have unit tests covering:
+  - Happy path (expected inputs produce expected outputs)
+  - Edge cases (boundary values, empty inputs, extreme values)
+  - Error paths (invalid inputs, failure conditions)
+- **Integration Tests**: Required for:
+  - Camera feed ingestion pipeline
+  - Detection-to-tracking handoff
+  - Decision engine rule evaluation
+  - Replay system video processing
+  - Multi-module interactions
+- **CV Model Validation Tests**: Ball detection and tracking models must be validated against:
+  - Known ball trajectories with ground truth data
+  - Different lighting conditions
+  - Different ball colors and speeds
+  - Occlusion scenarios
+- **Decision Engine Tests**: Every rule in the decision engine must have test cases with:
+  - Known input trajectories and expected outcomes (OUT/NOT OUT)
+  - Edge cases near decision boundaries
+  - Confidence threshold verification
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### Test Coverage
+- Minimum 80% code coverage for all modules.
+- 100% coverage for the decision engine and rules logic.
+- Coverage reports generated on every build.
+
+### Test Data
+- Maintain a curated set of test fixtures (sample frames, trajectories, match scenarios).
+- Test data must be version-controlled alongside code.
+- No test should depend on external resources or network access.
+
+## Coding Standards
+
+### Language & Style
+- Python as the primary language for CV processing and backend logic.
+- Follow PEP 8 strictly — enforced via linting (ruff or flake8).
+- Type hints required on all function signatures.
+- Maximum function length: 30 lines. If longer, refactor into smaller functions.
+- Maximum file length: 300 lines. Split into modules if exceeded.
+
+### Naming Conventions
+- Variables and functions: `snake_case`
+- Classes: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Modules and files: `snake_case`
+- Names must be descriptive — no single-letter variables except loop counters.
+
+### Documentation
+- Every module must have a docstring explaining its purpose.
+- Every public function must have a docstring with: description, parameters, return value, and exceptions.
+- Complex algorithms (trajectory prediction, spin calculation) must have inline comments explaining the math.
+- No documentation for self-explanatory code — avoid noise.
+
+### Code Organization
+- One responsibility per module — no god classes or god files.
+- Dependencies flow inward: UI -> Services -> Core -> Models.
+- No circular imports.
+- Configuration separated from logic — use config files or environment variables.
+- Secrets and tokens must never be hardcoded; use `.env` files.
+
+### Error Handling
+- Use specific exception types, not bare `except`.
+- All errors must be logged with context (what was happening, what input caused it).
+- User-facing errors must be human-readable.
+- Internal errors must include stack traces in debug mode.
+- Never swallow exceptions silently.
+
+### Version Control
+- Atomic commits — one logical change per commit.
+- Descriptive commit messages following conventional commits format.
+- Feature branches for all new work.
+- No direct commits to main branch.
+- All merges require passing tests.
+
+### Performance Standards
+- Ball detection must process frames within 33ms (30fps target).
+- Replay generation must complete within 3 seconds of request.
+- Memory usage must stay under 2GB during active tracking.
+- No memory leaks — all resources (camera feeds, video buffers) must be properly released.
+
+## Data & Privacy
+
+- Video recordings stay local by default.
+- No facial recognition or player identification beyond position tracking.
+- Users control what gets saved and what gets deleted.
+- Match data can be exported in open formats (JSON, CSV).
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- This constitution supersedes all other development practices.
+- Amendments require documentation, team discussion, and explicit approval.
+- All code reviews must verify compliance with these principles.
+- Complexity must be justified — default to the simplest solution that works.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-02-14 | **Last Amended**: 2026-02-14
