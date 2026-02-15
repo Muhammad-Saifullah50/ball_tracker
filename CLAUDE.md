@@ -310,3 +310,10 @@ Architectural decision detected: [brief-description]
    Document reasoning and tradeoffs? Run `/sp.adr [decision-title]`
 
 Wait for consent; never auto-create ADRs. Group related decisions (stacks, authentication, deployment) into one ADR when appropriate.
+
+## Active Technologies
+- Python 3.11+ + OpenCV 4.8+, PyTorch 2.0+, Ultralytics (YOLOv8), ONNX Runtime, filterpy, Streamlit 1.33+, streamlit-drawable-canvas (001-cricket-ball-tracker-mvp)
+- JSON files for configuration persistence (no database) (001-cricket-ball-tracker-mvp)
+
+## Recent Changes
+- 001-cricket-ball-tracker-mvp: Added Python 3.11+ + OpenCV 4.8+, PyTorch 2.0+, Ultralytics (YOLOv8), ONNX Runtime, filterpy, Streamlit 1.33+, streamlit-drawable-canvas
