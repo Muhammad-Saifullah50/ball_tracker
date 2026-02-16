@@ -11,6 +11,7 @@ dependencies = [
     "opencv-python-headless>=4.8.0",
     "streamlit>=1.33.0",
     "streamlit-drawable-canvas>=0.9.3",
+    "streamlit-webrtc>=0.45.0",
     "torch>=2.0.0",
     "ultralytics>=8.0.0",
 ]

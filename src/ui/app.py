@@ -35,6 +35,12 @@ def main():
     - Automated decision support for LBW, wides, and caught-behind
     - Configurable rules engine for different skill levels
 
+    **Mobile Usage**: For best results on mobile devices:
+    - Use Chrome (Android) or Safari (iOS)
+    - Ensure you have granted camera permissions
+    - Point your rear camera at the cricket setup
+    - Use in a well-lit environment for better detection
+
     **Note**: This is an MVP implementation focused on home cricket dispute resolution.
     """)
 
@@ -55,6 +61,8 @@ def main():
     2. **Live Tracking**: Start tracking deliveries in real-time
     3. **Replay**: Review deliveries with slow motion and decision graphics
     4. **Rules**: Adjust rules parameters for different skill levels
+
+    **For Mobile Users**: When prompted, please allow camera access permissions for the best experience.
     """)
 
     st.markdown("---")

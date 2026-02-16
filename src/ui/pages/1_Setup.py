@@ -3,7 +3,6 @@ Setup page for Cricket Ball Tracker
 Handles pitch calibration, stump detection, wall boundary drawing, and rules configuration
 """
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image
 import json
@@ -20,6 +19,32 @@ from src.config.config_manager import ConfigManager
 from src.detection.stump_detector import StumpDetector
 from src.calibration.pitch_calibrator import PitchCalibrator
 from src.models.session_config import SessionConfig
+
+# Import streamlit-webrtc components
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+import av
+
+
+class StumpDetectionProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.detector = StumpDetector()
+        self.last_detection = None
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        # Convert av.VideoFrame to numpy array
+        img = frame.to_ndarray(format="bgr24")
+
+        # For setup purposes, we'll just return the original frame
+        # But we can run detection in the background
+        try:
+            detection = self.detector.detect_stumps(img)
+            self.last_detection = detection
+        except Exception as e:
+            # Detection failed, continue with original frame but log the error
+            pass
+
+        # Return the frame as-is to avoid video processing issues
+        return img
 
 
 def main():
@@ -102,50 +127,119 @@ def main():
     with tab2:
         st.header("Stump Detection")
 
-        # Option to capture current frame for calibration
-        if st.button("Capture Frame for Stump Calibration"):
-            # Attempt to capture from camera
-            cap = cv2.VideoCapture(config.camera_index)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                cap.release()
-
-                if ret:
-                    # Convert BGR to RGB for display
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    st.image(frame_rgb, caption="Captured Frame", use_column_width=True)
-
-                    # Try to detect stumps using our detector
-                    detector = StumpDetector()
-                    stump_pos = detector.detect_stumps(frame)
-
-                    if stump_pos:
-                        st.success("Stumps detected!")
-                        st.json({
-                            "off_stump": stump_pos.off_stump_px,
-                            "middle_stump": stump_pos.middle_stump_px,
-                            "leg_stump": stump_pos.leg_stump_px,
-                            "confidence": stump_pos.confidence
-                        })
-
-                        # Update config with detected stumps
-                        config.batting_stumps = stump_pos
-
-                        # Calculate pixels per meter based on known pitch length
-                        # For demo, we'll just set a default value
-                        config.pitch_config.pixels_per_meter = 100.0
-                        if stump_pos.off_stump_px and stump_pos.leg_stump_px:
-                            # Calculate distance between stumps and use that to estimate pixels per meter
-                            stump_distance_px = ((stump_pos.off_stump_px[0] - stump_pos.leg_stump_px[0])**2 +
-                                               (stump_pos.off_stump_px[1] - stump_pos.leg_stump_px[1])**2)**0.5
-                            # Standard cricket stumps are 8.8 inches apart = 0.224 meters
-                            config.pitch_config.pixels_per_meter = stump_distance_px / 0.224
+        # Option to upload image or use live camera for calibration
+        col1, col2 = st.columns(2)
+        with col1:
+            uploaded_file = st.file_uploader("Upload a photo of stumps", type=["jpg", "jpeg", "png"], key="stump_upload")
+        with col2:
+            st.markdown("**Or use live camera:**")
+            st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
+            # Use streamlit-webrtc for live camera access with WebRTC
+            webrtc_ctx = webrtc_streamer(
+                key="stump-detection",
+                mode=WebRtcMode.RECVONLY,  # Only receive video stream
+                rtc_configuration=RTCConfiguration({
+                    "iceServers": [
+                        {"urls": ["stun:stun.l.google.com:19302"]},
+                        {"urls": ["stun:stun.cloudflare.com:3478"]}
+                    ],
+                    "iceCandidatePoolSize": 10
+                }),
+                video_processor_factory=StumpDetectionProcessor,
+                media_stream_constraints={
+                    "video": {
+                        "facingMode": "environment",  # Use rear camera on mobile
+                        "width": {"ideal": 1280},
+                        "height": {"ideal": 720}
+                    },
+                    "audio": False
+                },
+                async_processing=True,
+                video_html_attrs={
+                    "style": {"width": "100%", "maxWidth": "600px", "height": "auto", "objectFit": "cover"},
+                    "controls": False,
+                    "autoPlay": True,
+                    "playsInline": True,
+                    "muted": True
+                }
+            )
+            if webrtc_ctx:
+                # Check if the stream is active (checking for different possible attributes)
+                if hasattr(webrtc_ctx, 'state') and hasattr(webrtc_ctx.state, 'playing'):
+                    if webrtc_ctx.state.playing:
+                        st.success("Camera connected! If you see a gray box, tap on it to start the video. Point it at the stumps.")
                     else:
-                        st.warning("Could not detect stumps. Please adjust camera position and try again.")
+                        st.info("Waiting for camera connection... If permissions were denied, refresh the page and allow camera access.")
+                elif hasattr(webrtc_ctx, 'video_receiver') and webrtc_ctx.video_receiver:
+                    st.success("Camera connected! If you see a gray box, tap on it to start the video. Point it at the stumps.")
                 else:
-                    st.error("Could not capture from camera. Please check the camera index and permissions.")
+                    st.info("Waiting for camera connection... Make sure to allow camera permissions when prompted.")
+
+            # Add a refresh button for mobile users who might have denied permissions
+            st.button("Refresh Camera Permissions")
+
+        # Process uploaded file if provided
+        if uploaded_file is not None:
+            # Read the uploaded image
+            pil_image = Image.open(uploaded_file)
+            frame = np.array(pil_image)
+
+            # Ensure the frame is in the right format
+            if frame.shape[-1] == 4:  # If RGBA, convert to RGB
+                frame = frame[:, :, :3]
+
+            # Display the uploaded image
+            st.image(pil_image, caption="Uploaded Frame", use_column_width=True)
+
+            # Try to detect stumps using our detector
+            detector = StumpDetector()
+            # Convert RGB to BGR for OpenCV processing
+            frame_bgr = frame[:, :, ::-1]  # RGB to BGR
+            stump_pos = detector.detect_stumps(frame_bgr)
+
+            if stump_pos:
+                st.success("Stumps detected!")
+                st.json({
+                    "off_stump": stump_pos.off_stump_px,
+                    "middle_stump": stump_pos.middle_stump_px,
+                    "leg_stump": stump_pos.leg_stump_px,
+                    "confidence": stump_pos.confidence
+                })
+
+                # Update config with detected stumps
+                config.batting_stumps = stump_pos
+
+                # Calculate pixels per meter based on known pitch length
+                # For demo, we'll just set a default value
+                config.pitch_config.pixels_per_meter = 100.0
+                if stump_pos.off_stump_px and stump_pos.leg_stump_px:
+                    # Calculate distance between stumps and use that to estimate pixels per meter
+                    stump_distance_px = ((stump_pos.off_stump_px[0] - stump_pos.leg_stump_px[0])**2 +
+                                       (stump_pos.off_stump_px[1] - stump_pos.leg_stump_px[1])**2)**0.5
+                    # Standard cricket stumps are 8.8 inches apart = 0.224 meters
+                    config.pitch_config.pixels_per_meter = stump_distance_px / 0.224
             else:
-                st.error(f"Could not open camera at index {config.camera_index}. Please check the index and permissions.")
+                st.warning("Could not detect stumps. Please use a clearer image.")
+
+        # Process live camera stream if available
+        elif webrtc_ctx and webrtc_ctx.video_processor:
+            st.info("Point your camera at the stumps. Click the 'Capture Frame' button below when ready.")
+
+            # Create a button to capture the current frame for processing
+            if st.button("Capture Frame for Stump Detection"):
+                # This will use the last frame from the video stream
+                # Since we can't directly access the video stream frame in this context
+                # we'll inform the user that they need to take a picture manually
+                st.warning("For now, please take a screenshot of the live camera feed and upload it above, or use the photo capture option.")
+
+                # In a complete implementation with WebRTC, we would capture the current frame
+                # when the user clicks the button and process it for stump detection
+                # This requires more advanced WebRTC handling which is a limitation of this approach
+                # without a more complex implementation
+
+        # Provide help text if neither input is provided
+        else:
+            st.info("Please either upload a photo or use the live camera to capture the stumps setup.")
 
     with tab3:
         st.header("Wide Configuration")

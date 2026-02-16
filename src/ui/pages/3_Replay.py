@@ -193,8 +193,8 @@ class ReplayApp:
             else:
                 rendered_frame = current_frame
 
-            # Convert BGR to RGB for display
-            rendered_frame_rgb = cv2.cvtColor(rendered_frame, cv2.COLOR_BGR2RGB)
+            # The rendered frame is already in RGB format from ReplayRenderer
+            rendered_frame_rgb = rendered_frame
 
             # Display the frame
             st.image(

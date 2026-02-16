@@ -3,7 +3,6 @@ Live Tracking page for Cricket Ball Tracker
 Displays real-time ball tracking with overlays
 """
 import streamlit as st
-import cv2
 import numpy as np
 from PIL import Image
 import time
@@ -32,14 +31,71 @@ from src.decision_engine.caught_behind_engine import CaughtBehindEngine
 from src.models.decisions import LBWDecision, WideDecision, CaughtBehindDecision
 from src.replay.replay_buffer import ReplayBuffer
 
+# Import streamlit-webrtc components
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+import av
+
+
+class BallTrackingProcessor(VideoProcessorBase):
+    def __init__(self, detector, tracker, segmenter, config):
+        self.ball_detector = detector
+        self.ball_tracker = tracker
+        self.delivery_segmenter = segmenter
+        self.config = config
+        self.current_frame = None
+        self.current_detection = None
+        self.current_trajectory = None
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        # Convert av.VideoFrame to numpy array
+        img = frame.to_ndarray(format="bgr24")
+
+        # Store the frame for access by the UI
+        self.current_frame = img.copy()
+
+        # Perform ball detection
+        try:
+            # Create a triplet of frames for the detector (using same frame for now)
+            frame_triplet = (img, img, img)
+            detection = self.ball_detector.detect(frame_triplet)
+            self.current_detection = detection
+        except:
+            # If detection fails, continue with no detection
+            self.current_detection = None
+
+        # Update tracker
+        self.ball_tracker.update(self.current_detection)
+
+        # Detect impacts if config is available
+        if self.config:
+            from src.calibration.pitch_calibrator import PitchCalibrator
+            calibrator = PitchCalibrator(
+                self.config.pitch_config,
+                self.config.batting_stumps
+            )
+            self.ball_tracker.detect_impact(threshold=30.0, calibrator=calibrator, config=self.config)
+        else:
+            self.ball_tracker.detect_impact(threshold=30.0)  # Fallback without classification
+
+        # Update segmenter
+        self.delivery_segmenter.update(self.current_detection)
+
+        # Get trajectory
+        pixels_per_meter = self.config.pitch_config.pixels_per_meter if self.config else None
+        self.current_trajectory = self.ball_tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
+
+        # Return the original frame (we can also return a processed frame with overlays if needed)
+        # Returning the original frame for display in the UI
+        return img
+
 
 class LiveTrackingApp:
     def __init__(self):
         self.config_manager = ConfigManager()
         self.config: Optional[SessionConfig] = None
-        self.cap: Optional[cv2.VideoCapture] = None
         self.is_tracking = False
-        self.tracker_thread = None
+        self.tracker_thread = None  # Initialize to None to prevent AttributeError
+        self.webrtc_ctx = None  # We'll store the WebRTC context here
 
         # Initialize components
         self.ball_detector = BallDetector()
@@ -78,48 +134,47 @@ class LiveTrackingApp:
         if not self.config:
             return False
 
-        try:
-            # Release existing camera if it exists
-            if self.cap:
-                self.cap.release()
-
-            self.cap = cv2.VideoCapture(self.config.camera_index)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.resolution[0])
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.resolution[1])
-
-            if not self.cap.isOpened():
-                st.error(f"Cannot open camera at index {self.config.camera_index}")
-                return False
-
-            return True
-        except Exception as e:
-            st.error(f"Error initializing camera: {str(e)}")
-            return False
+        # For WebRTC compatibility, we don't initialize OpenCV camera
+        # Instead, we'll use streamlit-webrtc component in the UI
+        return True
 
     def draw_overlays(self, frame, detection, trajectory, calibrator):
-        """Draw tracking overlays on frame."""
-        overlay = frame.copy()
+        """Draw tracking overlays on frame using PIL for mobile compatibility."""
+        from PIL import Image, ImageDraw, ImageFont
+        import math
+
+        # Convert numpy array to PIL Image if it's not already
+        if not isinstance(frame, Image.Image):
+            # Make sure frame is in correct format
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            pil_image = Image.fromarray(frame)
+        else:
+            pil_image = frame.copy()
+
+        draw = ImageDraw.Draw(pil_image, "RGBA")
 
         # Draw detection point if available
         if detection:
-            cv2.circle(overlay, (int(detection.x), int(detection.y)), 8, (0, 255, 0), -1)
-            cv2.putText(overlay, f"Ball: {detection.confidence:.2f}",
-                       (int(detection.x) + 10, int(detection.y) - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            x, y = int(detection.x), int(detection.y)
+            # Draw circle: (left, top, right, bottom)
+            draw.ellipse([x-8, y-8, x+8, y+8], fill=(0, 255, 0), outline=(0, 255, 0), width=2)
+            # Text: (x, y) position
+            draw.text((x + 10, y - 15), f"Ball: {detection.confidence:.2f}", fill=(0, 255, 0))
 
         # Draw trajectory if available
         if trajectory and len(trajectory.detections) > 1:
             points = [(int(d.x), int(d.y)) for d in trajectory.detections]
             if len(points) > 1:
                 for i in range(len(points) - 1):
-                    cv2.line(overlay, points[i], points[i+1], (255, 0, 0), 2)
+                    draw.line([points[i], points[i+1]], fill=(255, 0, 0), width=2)
 
         # Draw bounce point if detected
         if trajectory and trajectory.bounce_point:
             bp = trajectory.bounce_point
-            cv2.circle(overlay, (int(bp.x), int(bp.y)), 10, (0, 255, 255), 2)
-            cv2.putText(overlay, "Bounce", (int(bp.x) + 10, int(bp.y) - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            x, y = int(bp.x), int(bp.y)
+            draw.ellipse([x-10, y-10, x+10, y+10], outline=(0, 255, 255), width=2)
+            draw.text((x + 10, y - 15), "Bounce", fill=(0, 255, 255))
 
         # Draw impact points if detected
         if trajectory and trajectory.impact_points:
@@ -134,50 +189,51 @@ class LiveTrackingApp:
                 }
 
                 color = color_map.get(impact.impact_type, (128, 128, 128))  # Default to gray
-                pos = impact.position_px
+                pos = (int(impact.position_px[0]), int(impact.position_px[1]))
 
                 # Draw different shapes based on impact type
                 if impact.impact_type == "stumps":
                     # Draw a rectangle for stumps hit
-                    cv2.rectangle(overlay, (pos[0]-8, pos[1]-8), (pos[0]+8, pos[1]+8), color, 2)
+                    draw.rectangle([pos[0]-8, pos[1]-8, pos[0]+8, pos[1]+8], outline=color, width=2)
                 elif impact.impact_type == "bat":
                     # Draw a circle for bat hit
-                    cv2.circle(overlay, pos, 8, color, 2)
+                    draw.ellipse([pos[0]-8, pos[1]-8, pos[0]+8, pos[1]+8], outline=color, width=2)
                 elif impact.impact_type == "pad":
                     # Draw a triangle for pad hit
-                    pts = np.array([[pos[0], pos[1]-8], [pos[0]-7, pos[1]+5], [pos[0]+7, pos[1]+5]], np.int32)
-                    cv2.polylines(overlay, [pts], True, color, 2)
+                    points = [(pos[0], pos[1]-8), (pos[0]-7, pos[1]+5), (pos[0]+7, pos[1]+5)]
+                    draw.polygon(points, outline=color, width=2)
                 else:
                     # Default to circle for other impacts
-                    cv2.circle(overlay, pos, 6, color, 2)
+                    draw.ellipse([pos[0]-6, pos[1]-6, pos[0]+6, pos[1]+6], outline=color, width=2)
 
-                cv2.putText(overlay, impact.impact_type, (pos[0] + 10, pos[1] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                draw.text((pos[0] + 10, pos[1] - 15), impact.impact_type, fill=color)
 
         # Draw calibrated elements (stumps, wide lines)
-        if calibrator:
+        if calibrator and self.config:
             # Draw stumps
             off_stump = self.config.batting_stumps.off_stump_px
             middle_stump = self.config.batting_stumps.middle_stump_px
             leg_stump = self.config.batting_stumps.leg_stump_px
 
-            cv2.circle(overlay, off_stump, 5, (0, 0, 255), -1)
-            cv2.circle(overlay, middle_stump, 5, (0, 0, 255), -1)
-            cv2.circle(overlay, leg_stump, 5, (0, 0, 255), -1)
-            cv2.putText(overlay, "Off", (off_stump[0] + 10, off_stump[1]),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            cv2.putText(overlay, "Mid", (middle_stump[0] + 10, middle_stump[1]),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            cv2.putText(overlay, "Leg", (leg_stump[0] + 10, leg_stump[1]),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            # Draw stumps as circles
+            draw.ellipse([off_stump[0]-5, off_stump[1]-5, off_stump[0]+5, off_stump[1]+5],
+                        fill=(0, 0, 255), outline=(0, 0, 255), width=2)
+            draw.ellipse([middle_stump[0]-5, middle_stump[1]-5, middle_stump[0]+5, middle_stump[1]+5],
+                        fill=(0, 0, 255), outline=(0, 0, 255), width=2)
+            draw.ellipse([leg_stump[0]-5, leg_stump[1]-5, leg_stump[0]+5, leg_stump[1]+5],
+                        fill=(0, 0, 255), outline=(0, 0, 255), width=2)
+
+            draw.text((off_stump[0] + 10, off_stump[1] - 10), "Off", fill=(0, 0, 255))
+            draw.text((middle_stump[0] + 10, middle_stump[1] - 10), "Mid", fill=(0, 0, 255))
+            draw.text((leg_stump[0] + 10, leg_stump[1] - 10), "Leg", fill=(0, 0, 255))
 
             # Draw wide lines
             try:
                 wide_lines = calibrator.get_wide_lines(self.config.wide_config)
                 off_line, leg_line = wide_lines
 
-                cv2.line(overlay, off_line[0], off_line[1], (255, 255, 0), 2)
-                cv2.line(overlay, leg_line[0], leg_line[1], (255, 255, 0), 2)
+                draw.line([off_line[0], off_line[1]], fill=(255, 255, 0), width=2)
+                draw.line([leg_line[0], leg_line[1]], fill=(255, 255, 0), width=2)
             except:
                 pass  # Skip if calibrator not ready
 
@@ -185,12 +241,13 @@ class LiveTrackingApp:
         if trajectory and hasattr(trajectory, 'projected_path') and trajectory.projected_path and len(trajectory.projected_path) >= 2:
             path = trajectory.projected_path
             for i in range(len(path) - 1):
-                cv2.line(overlay, path[i], path[i+1], (255, 165, 0), 2)  # Orange line for projected path
+                draw.line([path[i], path[i+1]], fill=(255, 165, 0), width=2)  # Orange line for projected path
                 # Add arrowheads to indicate direction
                 if i % 5 == 0:  # Add arrowheads every 5 segments to avoid clutter
                     mid_point = ((path[i][0] + path[i+1][0]) // 2, (path[i][1] + path[i+1][1]) // 2)
                     next_point = path[i+1]
-                    cv2.arrowedLine(overlay, mid_point, next_point, (255, 165, 0), 1, tipLength=0.2)
+                    # Draw a small line to indicate direction
+                    draw.line([mid_point, next_point], fill=(255, 165, 0), width=2)
 
         # Draw caught behind visual evidence if available
         if trajectory and trajectory.caught_behind_decision:
@@ -199,9 +256,9 @@ class LiveTrackingApp:
                 # Draw a red circle around the bat impact if caught behind is OUT
                 for impact in trajectory.impact_points:
                     if impact.impact_type == "bat":
-                        cv2.circle(overlay, impact.position_px, 15, (0, 0, 255), 3)  # Red circle for bat hit
-                        cv2.putText(overlay, "EDGE!", (impact.position_px[0] + 20, impact.position_px[1] - 20),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                        pos = impact.position_px
+                        draw.ellipse([pos[0]-15, pos[1]-15, pos[0]+15, pos[1]+15], outline=(0, 0, 255), width=3)  # Red circle for bat hit
+                        draw.text((pos[0] + 20, pos[1] - 25), "EDGE!", fill=(0, 0, 255))
 
                 # Draw a dashed line from bat to wall if ball hits wall
                 wall_impacts = [imp for imp in trajectory.impact_points if imp.impact_type == "wall"]
@@ -211,7 +268,7 @@ class LiveTrackingApp:
                         bat_pos = bat_impacts[0].position_px
                         wall_pos = wall_impacts[0].position_px
                         # Draw a dashed line from bat to wall to indicate direct hit
-                        self._draw_dashed_line(overlay, bat_pos, wall_pos, (0, 165, 255), 2)  # Orange for caught behind
+                        self._draw_dashed_line_pil(draw, bat_pos, wall_pos, (0, 165, 255), 2)  # Orange for caught behind
 
         # Draw decision status text (LBW, Wide, Caught Behind) on the frame
         decision_texts = []
@@ -224,16 +281,13 @@ class LiveTrackingApp:
 
         # Display decision texts on the frame
         for i, text in enumerate(decision_texts):
-            cv2.putText(overlay, text, (10, 30 + i * 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            draw.text((10, 30 + i * 30), text, fill=(0, 0, 255))
 
-        # Blend overlay with original frame
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        # Convert back to numpy array for display
+        return np.array(pil_image)
 
-        return frame
-
-    def _draw_dashed_line(self, img, pt1, pt2, color, thickness=1, gap=10):
-        """Draw a dashed line from pt1 to pt2."""
+    def _draw_dashed_line_pil(self, draw, pt1, pt2, color, thickness=1, gap=10):
+        """Draw a dashed line from pt1 to pt2 using PIL."""
         import math
         dist = ((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)**0.5
         dash_count = int(dist / gap)
@@ -247,99 +301,36 @@ class LiveTrackingApp:
                 int(pt1[0] + (pt2[0] - pt1[0]) * (i + 0.5) / dash_count),
                 int(pt1[1] + (pt2[1] - pt1[1]) * (i + 0.5) / dash_count)
             )
-            cv2.line(img, start, end, color, thickness)
+            draw.line([start, end], fill=color, width=thickness)
 
     def tracking_loop(self):
         """Main tracking loop running in separate thread."""
-        while self.is_tracking and self.cap and self.cap.isOpened():
-            success, frame = self.cap.read()
-
-            if not success:
-                time.sleep(0.03)  # ~30fps
-                continue
-
-            self.current_frame = frame.copy()
-            self.current_frame_number += 1
-
-            # Add current frame to replay buffer
-            self.replay_buffer.add_frame(frame.copy())
-
-            # Create a BallDetection from the frame (using placeholder logic for now)
-            # In real implementation, we'd use the actual detector
-            if self.current_frame is not None:
-                # For MVP, just use the placeholder detector
-                # Create a fake frame triplet for the detector
-                frame_triplet = (self.current_frame, self.current_frame, self.current_frame)
-
-                try:
-                    detection = self.ball_detector.detect(frame_triplet)
-                    self.current_detection = detection
-                except:
-                    # If detection fails, continue with no detection
-                    self.current_detection = None
-
-            # Update tracker
-            self.ball_tracker.update(self.current_detection)
-
-            # Detect impacts using the calibrator and config if available
-            if self.pitch_calibrator and self.config:
-                self.ball_tracker.detect_impact(threshold=30.0, calibrator=self.pitch_calibrator, config=self.config)
-            else:
-                self.ball_tracker.detect_impact(threshold=30.0)  # Fallback without classification
-
-            # Update segmenter
-            state = self.delivery_segmenter.update(self.current_detection)
-
-            # Check if delivery just completed and evaluate wide and caught behind decisions if needed
-            if state == "complete":
-                # Get current trajectory to save with the delivery in the replay buffer
-                pixels_per_meter = self.config.pitch_config.pixels_per_meter if self.config else None
-                trajectory = self.ball_tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
-
-                # Associate decisions with the trajectory
-                if self.current_lbw_decision:
-                    trajectory.lbw_decision = self.current_lbw_decision
-                if self.current_wide_decision:
-                    trajectory.wide_decision = self.current_wide_decision
-                if self.current_caught_behind_decision:
-                    trajectory.caught_behind_decision = self.current_caught_behind_decision
-
-                # Store the trajectory in the replay buffer
-                self.replay_buffer.set_current_trajectory(trajectory)
-
-                # Save the delivery in the replay buffer
-                self.replay_buffer.save_current_delivery()
-
-                # Auto-evaluate wide after delivery completion
-                self.evaluate_wide_auto()
-                # Auto-evaluate caught behind after delivery completion
-                self.evaluate_caught_behind_auto()
-
-            # Get current trajectory
-            pixels_per_meter = self.config.pitch_config.pixels_per_meter if self.config else None
-            self.current_trajectory = self.ball_tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
-
-            # Add the caught behind decision to the trajectory for visualization if available
-            if self.current_caught_behind_decision and self.current_trajectory:
-                self.current_trajectory.caught_behind_decision = self.current_caught_behind_decision
-
-            time.sleep(0.03)  # ~30fps
+        # In mobile mode, this function is not used directly as we handle frames via Streamlit UI
+        # This is kept for potential advanced implementations that might use background processing
+        # For now, frame processing happens in the main UI loop
+        pass
 
     def start_tracking(self):
         """Start the tracking process."""
-        if not self.is_tracking:
-            self.is_tracking = True
-            self.tracker_thread = threading.Thread(target=self.tracking_loop)
-            self.tracker_thread.start()
+        self.is_tracking = True
+        # In WebRTC mode, we don't need a background thread
+        # The tracking happens in the WebRTC video processor
+        # Only initialize thread if needed for other processes
+        pass
 
     def stop_tracking(self):
         """Stop the tracking process."""
         self.is_tracking = False
-        if self.tracker_thread:
-            self.tracker_thread.join(timeout=1)  # Wait up to 1 second for thread to finish
-
-        if self.cap:
-            self.cap.release()
+        # Safely handle thread if it exists
+        if hasattr(self, 'tracker_thread') and self.tracker_thread:
+            try:
+                if self.tracker_thread.is_alive():
+                    self.tracker_thread.join(timeout=1)  # Wait up to 1 second for thread to finish
+            except AttributeError:
+                # Thread might not have started or been properly initialized
+                pass
+        # Reset thread reference
+        self.tracker_thread = None
 
     def run(self):
         """Run the live tracking page."""
@@ -347,9 +338,6 @@ class LiveTrackingApp:
         st.markdown("### Real-time ball tracking with decision support")
 
         if not self.load_config():
-            st.stop()
-
-        if not self.initialize_camera():
             st.stop()
 
         # Initialize pitch calibrator
@@ -363,15 +351,15 @@ class LiveTrackingApp:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("Start Tracking", type="primary"):
+            if st.button("Start Tracking", type="primary", key="start_tracking_mobile"):
                 self.start_tracking()
 
         with col2:
-            if st.button("Stop Tracking", type="secondary"):
+            if st.button("Stop Tracking", type="secondary", key="stop_tracking_mobile"):
                 self.stop_tracking()
 
         with col3:
-            if st.button("LBW Appeal", type="secondary"):
+            if st.button("LBW Appeal", type="secondary", key="lbw_appeal_mobile"):
                 if self.current_trajectory and self.current_trajectory.impact_points:
                     # Find pad impact events in the trajectory
                     pad_impacts = [impact for impact in self.current_trajectory.impact_points if impact.impact_type == "pad"]
@@ -388,7 +376,7 @@ class LiveTrackingApp:
         st.sidebar.markdown(f"**Tracking Status:** {tracking_status}")
 
         if self.config:
-            st.sidebar.markdown(f"**Camera:** {self.config.camera_index}")
+            st.sidebar.markdown(f"**Camera:** Mobile Camera")
             st.sidebar.markdown(f"**Resolution:** {self.config.resolution}")
             st.sidebar.markdown(f"**Batsman:** {self.config.batsman_handedness}")
 
@@ -410,66 +398,210 @@ class LiveTrackingApp:
             st.markdown("### Delivery Status")
             delivery_status = st.empty()
 
-        # Main tracking loop for UI updates
-        while self.is_tracking:
-            if self.current_frame is not None:
-                # Draw overlays on current frame
-                display_frame = self.current_frame.copy()
+        # WebRTC camera input for real-time tracking
+        if self.is_tracking:
+            st.subheader("Camera Input")
+            st.info("Point your camera at the cricket game to start tracking")
 
-                if self.pitch_calibrator:
-                    display_frame = self.draw_overlays(
-                        display_frame,
-                        self.current_detection,
-                        self.current_trajectory,
-                        self.pitch_calibrator
-                    )
+            # Troubleshooting info for camera issues
+            with st.expander(" troubleshoot camera issues"):
+                st.markdown("""
+                ### Troubleshooting Camera Issues:
 
-                # Convert BGR to RGB for display
-                display_frame_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                1. **Browser Permissions:**
+                   - Check if camera access is blocked (look for camera icon in address bar)
+                   - Click on the icon and select "Always allow" for camera
+                   - Refresh the page after granting permissions
 
-                # Display the frame
-                video_placeholder.image(
-                    display_frame_rgb,
-                    caption="Live Tracking",
-                    channels="RGB",
-                    use_column_width=True
+                2. **Browser Compatibility:**
+                   - Use Chrome, Firefox, or Safari (Edge sometimes has issues)
+                   - Make sure your browser is up-to-date
+
+                3. **Mobile Users:**
+                   - Use Chrome (Android) or Safari (iOS)
+                   - Make sure to tap on the gray box to activate the camera
+
+                4. **Network:**
+                   - If camera doesn't work, you may be behind a restrictive firewall
+                   - Try using a different network if possible
+                """)
+
+            st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
+            # Use streamlit-webrtc for continuous camera access with WebRTC
+            # Enhanced RTC configuration for better compatibility
+            try:
+                self.webrtc_ctx = webrtc_streamer(
+                    key="ball-tracking",
+                    mode=WebRtcMode.RECVONLY,  # Only receive video stream
+                    rtc_configuration=RTCConfiguration({
+                        "iceServers": [
+                            {"urls": ["stun:stun.l.google.com:19302"]},
+                            {"urls": ["stun:stun.cloudflare.com:3478"]},
+                            {"urls": ["stun:stun.stunprotocol.org:3478"]},  # Additional STUN server
+                            {"urls": ["stun:stun.freeswitch.org:3478"]}      # Backup STUN server
+                        ],
+                        "iceCandidatePoolSize": 10
+                    }),
+                    video_processor_factory=lambda: BallTrackingProcessor(
+                        self.ball_detector,
+                        self.ball_tracker,
+                        self.delivery_segmenter,
+                        self.config
+                    ),
+                    media_stream_constraints={
+                        "video": {
+                            "facingMode": "environment" if self.config else "user",  # Use rear camera on mobile, front on desktop
+                            "width": {"ideal": 1280},
+                            "height": {"ideal": 720},
+                            # Add frame rate constraint for smooth video
+                            "frameRate": {"ideal": 30}
+                        },
+                        "audio": False
+                    },
+                    async_processing=True,
+                    video_html_attrs={
+                        "style": {"width": "100%", "maxWidth": "600px", "height": "auto", "objectFit": "cover"},
+                        "controls": False,
+                        "autoPlay": True,
+                        "playsInline": True,
+                        "muted": True
+                    },
+                    desired_playing_state=self.is_tracking,  # Explicitly set playing state
+                    # Add timeout for connection attempts
+                    timeout=30  # 30 seconds timeout
                 )
 
-                # Update status panels
-                if self.current_detection:
-                    detection_status.info(f"🟢 Detected - Confidence: {self.current_detection.confidence:.2f}")
+                if self.webrtc_ctx:
+                    # Check if the stream is active with better error handling
+                    if hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state:
+                        if hasattr(self.webrtc_ctx.state, 'playing') and self.webrtc_ctx.state.playing:
+                            st.success("✅ Camera connected! Ball tracking is active.")
+                            # Additional message for gray box issue
+                            st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
+                        elif hasattr(self.webrtc_ctx, 'video_receiver') and self.webrtc_ctx.video_receiver:
+                            st.success("✅ Camera stream established! Ball tracking is active.")
+                        else:
+                            # Check if there are connection issues
+                            if hasattr(self.webrtc_ctx.state, 'signalingState'):
+                                if self.webrtc_ctx.state.signalingState == "closed":
+                                    st.error("❌ Camera connection closed. Network issue or browser incompatible.")
+                                elif self.webrtc_ctx.state.signalingState == "have-remote-offer":
+                                    st.info("📡 Negotiating camera connection...")
+                            else:
+                                st.warning("⚠️ Camera connected but video stream not playing. Try clicking on the gray box above.")
+                                # Check for error states
+                                if hasattr(self.webrtc_ctx.state, 'error'):
+                                    st.error(f"Camera Error: {self.webrtc_ctx.state.error}")
+                    else:
+                        # Provide more detailed troubleshooting information
+                        st.info("📷 Waiting for camera connection... Make sure to allow camera permissions when prompted.")
+                        st.warning("If you've denied permissions, please refresh the page and allow camera access when prompted.")
+
+                        # Provide connection troubleshooting tips
+                        with st.expander("Connection Troubleshooting"):
+                            st.markdown("""
+                            **If camera doesn't work:**
+
+                            1. **Check firewall settings** - Some firewalls block WebRTC connections
+                            2. **Try a different browser** - Chrome, Firefox, Safari work best
+                            3. **Ensure HTTPS** - Some browsers require secure context
+                            4. **Check for VPN** - VPNs can interfere with WebRTC
+                            """)
                 else:
-                    detection_status.warning("🟡 No ball detected")
+                    st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
+                    st.info("Try using Chrome, Firefox, or Safari for the best WebRTC support.")
+            except Exception as e:
+                st.error(f"Error initializing camera: {str(e)}")
+                st.info("Please ensure your browser supports WebRTC and camera access is permitted.")
+                # Provide more specific error messages
+                error_msg = str(e).lower()
+                if "permission" in error_msg:
+                    st.warning("⚠️ Camera permission was denied. Refresh the page and allow camera access.")
+                elif "device" in error_msg or "camera" in error_msg:
+                    st.error("❌ No camera device found. Please check if a camera is connected to your device.")
+                elif "rtc" in error_msg or "webrtc" in error_msg:
+                    st.error("❌ WebRTC connection failed. This may be due to network restrictions.")
+                else:
+                    st.info("Try using a different browser or check your network connection.")
 
-                if self.current_trajectory:
-                    tracking_info.info(f"""
-                    **Trajectory:**
-                    - Points: {len(self.current_trajectory.detections)}
-                    - Speed: {self.current_trajectory.speed_kmh or 'N/A'} px/s
-                    - Bounce: {'Yes' if self.current_trajectory.bounce_point else 'No'}
-                    """)
+            # Add a refresh button for mobile users who might have denied permissions
+            st.button("Refresh Camera Permissions")
 
-                delivery_state = self.delivery_segmenter.update(self.current_detection)
-                delivery_status.info(f"State: {delivery_state}")
+            if self.webrtc_ctx and self.webrtc_ctx.video_processor:
+                # Check if the video processor has a current frame
+                if hasattr(self.webrtc_ctx.video_processor, 'current_frame') and self.webrtc_ctx.video_processor.current_frame is not None:
+                    # Get the frame from the WebRTC processor
+                    frame = self.webrtc_ctx.video_processor.current_frame
+                    self.current_frame = frame.copy()
+                    self.current_frame_number += 1
 
-                # Auto-evaluate wide and caught behind decisions when delivery is completed
-                if delivery_state == "complete" and self.current_trajectory:
-                    self.evaluate_wide_auto()
-                    self.evaluate_caught_behind_auto()
+                    # Add current frame to replay buffer
+                    self.replay_buffer.add_frame(frame.copy())
 
-                    # Also save the trajectory with decisions to replay buffer
-                    if self.current_lbw_decision:
-                        self.current_trajectory.lbw_decision = self.current_lbw_decision
-                    if self.current_wide_decision:
-                        self.current_trajectory.wide_decision = self.current_wide_decision
-                    if self.current_caught_behind_decision:
-                        self.current_trajectory.caught_behind_decision = self.current_caught_behind_decision
+                    # Update our local tracking variables from the processor
+                    if hasattr(self.webrtc_ctx.video_processor, 'current_detection'):
+                        self.current_detection = self.webrtc_ctx.video_processor.current_detection
+                    if hasattr(self.webrtc_ctx.video_processor, 'current_trajectory'):
+                        self.current_trajectory = self.webrtc_ctx.video_processor.current_trajectory
 
-            time.sleep(0.1)  # Update UI at ~10fps for better responsiveness
+                    # Draw overlays on current frame
+                    display_frame = frame.copy()
 
-        # When tracking stops, show final status
-        if not self.is_tracking:
-            st.info("Tracking stopped. Start again to continue.")
+                    if self.pitch_calibrator:
+                        display_frame = self.draw_overlays(
+                            display_frame,
+                            self.current_detection,
+                            self.current_trajectory,
+                            self.pitch_calibrator
+                        )
+
+                    # WebRTC frames are in BGR format, but PIL expects RGB
+                    # The draw_overlays function returns an RGB array, so no conversion needed
+                    # But let's make sure the format is correct for Streamlit
+                    if display_frame.dtype != np.uint8:
+                        display_frame = display_frame.astype(np.uint8)
+
+                    # Ensure the image is in RGB format for Streamlit
+                    if len(display_frame.shape) == 3 and display_frame.shape[2] == 3:
+                        # Check if it might be BGR by checking typical color distributions
+                        # If red channel has very high values compared to others, it might be BGR
+                        # Since draw_overlays uses PIL and returns RGB, we assume it's RGB
+                        display_frame_rgb = display_frame
+                    elif len(display_frame.shape) == 2:  # Grayscale
+                        # Convert grayscale to RGB
+                        display_frame_rgb = np.stack([display_frame] * 3, axis=-1)
+                    else:
+                        display_frame_rgb = display_frame
+
+                    # Display the frame with overlays
+                    video_placeholder.image(
+                        display_frame_rgb,
+                        caption="Live Tracking",
+                        channels="RGB",  # Streamlit expects RGB format
+                        use_column_width=True
+                    )
+                else:
+                    # Show a more descriptive message when frame is not available yet
+                    video_placeholder.info("📡 Waiting for camera stream... Video processor active, frame should appear shortly.")
+                    st.info("The camera is connected but waiting for the first frame. This may take a few seconds.")
+
+                    # Update status panels when frame is not available yet
+                    detection_status.info("🟡 Waiting for camera feed...")
+                    tracking_info.info("No trajectory data")
+                    delivery_status.info("State: idle")
+            else:
+                # Show camera input area but no video stream yet
+                video_placeholder.info("📷 Waiting for camera stream... Please allow camera access when prompted.")
+                st.info("Please ensure camera permissions are granted to the browser. Look for permission prompts in your browser.")
+
+                # Update status panels when no video processor is available yet
+                detection_status.info("🟡 Waiting for camera feed...")
+                tracking_info.info("No trajectory data")
+                delivery_status.info("State: idle")
+        else:
+            st.info("Tracking is stopped. Click 'Start Tracking' to begin.")
+            video_placeholder.info("Camera feed will appear here when tracking is active")
+            st.warning("Camera access will be requested when you start tracking.")
 
     def evaluate_lbw(self, pad_impact):
         """Evaluate LBW decision based on pad impact."""
