@@ -5,9 +5,11 @@ import streamlit as st
 import sys
 from pathlib import Path
 
-# Add the project root directory to the Python path
+# Add the project root directory to the Python path if not already there
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+project_root_str = str(project_root)
+if project_root_str not in sys.path:
+    sys.path.insert(0, project_root_str)
 
 from src.config.config_manager import ConfigManager
 
