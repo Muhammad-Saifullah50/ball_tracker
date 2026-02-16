@@ -316,45 +316,74 @@ def main():
 
             # Create a button to capture the current frame for processing
             if st.button("Capture Frame for Stump Detection"):
-                # Get the most recent detection from the thread-safe container
-                with stump_global_lock:
-                    last_detection = stump_track_container["last_detection"]
-                    current_frame = stump_track_container["frame"]
+                # Wait for a frame to be available with a timeout
+                import time
+                max_wait_time = 5.0  # Wait up to 5 seconds
+                wait_start = time.time()
 
-                if current_frame is not None and last_detection is not None:
-                    # Convert frame to PIL image for display
+                current_frame = None
+                last_detection = None
+
+                # Keep checking the container until we have data or timeout
+                while time.time() - wait_start < max_wait_time:
+                    with stump_global_lock:
+                        current_frame = stump_track_container["frame"]
+                        last_detection = stump_track_container["last_detection"]
+
                     if current_frame is not None:
-                        pil_image = Image.fromarray(current_frame)
-                        st.image(pil_image, caption="Captured Frame", use_column_width=True)
+                        break  # We have a frame, exit the loop
+                    time.sleep(0.1)  # Brief pause to avoid busy waiting
 
-                        if last_detection and last_detection.confidence > 0.5:  # Add confidence threshold
-                            st.success("Stumps detected!")
-                            st.json({
-                                "off_stump": last_detection.off_stump_px,
-                                "middle_stump": last_detection.middle_stump_px,
-                                "leg_stump": last_detection.leg_stump_px,
-                                "confidence": last_detection.confidence
-                            })
+                if current_frame is not None:
+                    # Convert frame to PIL image for display
+                    pil_image = Image.fromarray(current_frame)
+                    st.image(pil_image, caption="Captured Frame", use_column_width=True)
 
-                            # Update config with detected stumps
-                            config.batting_stumps = last_detection
+                    # Run detection on the captured frame if no detection was available from the callback
+                    if last_detection is None or last_detection.confidence < 0.1:
+                        # Run detection on this specific frame
+                        detector = StumpDetector()
+                        # Convert RGB to BGR for OpenCV processing
+                        frame_bgr = current_frame[:, :, ::-1]  # RGB to BGR
+                        last_detection = detector.detect_stumps(frame_bgr)
 
-                            # Calculate pixels per meter based on known pitch length
-                            config.pitch_config.pixels_per_meter = 100.0
-                            if last_detection.off_stump_px and last_detection.leg_stump_px:
-                                # Calculate distance between stumps and use that to estimate pixels per meter
-                                stump_distance_px = ((last_detection.off_stump_px[0] - last_detection.leg_stump_px[0])**2 +
-                                                   (last_detection.off_stump_px[1] - last_detection.leg_stump_px[1])**2)**0.5
-                                # Standard cricket stumps are 8.8 inches apart = 0.224 meters
-                                config.pitch_config.pixels_per_meter = stump_distance_px / 0.224
-                        else:
-                            st.warning("Could not detect stumps or low confidence. Please adjust camera and try again.")
+                    if last_detection and last_detection.confidence > 0.5:  # Add confidence threshold
+                        st.success("Stumps detected!")
+                        st.json({
+                            "off_stump": last_detection.off_stump_px,
+                            "middle_stump": last_detection.middle_stump_px,
+                            "leg_stump": last_detection.leg_stump_px,
+                            "confidence": last_detection.confidence
+                        })
+
+                        # Update config with detected stumps
+                        config.batting_stumps = last_detection
+
+                        # Calculate pixels per meter based on known pitch length
+                        config.pitch_config.pixels_per_meter = 100.0
+                        if last_detection.off_stump_px and last_detection.leg_stump_px:
+                            # Calculate distance between stumps and use that to estimate pixels per meter
+                            stump_distance_px = ((last_detection.off_stump_px[0] - last_detection.leg_stump_px[0])**2 +
+                                               (last_detection.off_stump_px[1] - last_detection.leg_stump_px[1])**2)**0.5
+                            # Standard cricket stumps are 8.8 inches apart = 0.224 meters
+                            config.pitch_config.pixels_per_meter = stump_distance_px / 0.224
+                    else:
+                        st.warning("Could not detect stumps or low confidence. Please adjust camera angle and try again.")
+
+                        # Provide troubleshooting tips for stump detection
+                        with st.expander("Stump Detection Tips"):
+                            st.markdown("""
+                            **For better stump detection:**
+
+                            1. **Lighting**: Ensure good lighting conditions on the stumps
+                            2. **Camera angle**: Position camera at a good angle to see all three stumps clearly
+                            3. **Distance**: Not too close or too far from the stumps
+                            4. **Background**: Ensure contrasting background so stumps are clearly visible
+                            5. **Clean stumps**: Make sure the stumps are visible and not covered by dirt/debris
+                            """)
                 else:
-                    # In a complete implementation with WebRTC, we would capture the current frame
-                    # when the user clicks the button and process it for stump detection
-                    # This requires more advanced WebRTC handling which is a limitation of this approach
-                    # without a more complex implementation
-                    st.warning("For now, please take a screenshot of the live camera feed and upload it above, or use the photo capture option.")
+                    st.warning("No frame captured from the camera. Please check camera permissions and connection, then try again.")
+                    st.info("Alternatively, you can upload a photo of the stumps using the upload option above.")
 
         # Provide help text if neither input is provided
         else:
