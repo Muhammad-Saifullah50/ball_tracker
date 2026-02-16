@@ -482,16 +482,16 @@ class LiveTrackingApp:
 
                 if self.webrtc_ctx:
                     # Check if the stream is active with better error handling
-                    # The webrtc_ctx has a playing property that indicates if the stream is active
-                    if hasattr(self.webrtc_ctx, 'playing') and self.webrtc_ctx.playing:
-                        st.success("✅ Camera connected! Ball tracking is active.")
-                        # Additional message for gray box issue
-                        st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
-                    elif hasattr(self.webrtc_ctx, 'video_receiver') and self.webrtc_ctx.video_receiver:
-                        st.success("✅ Camera stream established! Ball tracking is active.")
-                    else:
-                        # Check if there are connection issues
-                        if hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state:
+                    # Access the playing state through the state attribute
+                    if hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state:
+                        if hasattr(self.webrtc_ctx.state, 'playing') and self.webrtc_ctx.state.playing:
+                            st.success("✅ Camera connected! Ball tracking is active.")
+                            # Additional message for gray box issue
+                            st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
+                        elif hasattr(self.webrtc_ctx.state, 'video_receiver') and self.webrtc_ctx.state.video_receiver:
+                            st.success("✅ Camera stream established! Ball tracking is active.")
+                        else:
+                            # Check if there are connection issues
                             if hasattr(self.webrtc_ctx.state, 'signalingState'):
                                 if self.webrtc_ctx.state.signalingState == "closed":
                                     st.error("❌ Camera connection closed. Network issue or browser incompatible.")
@@ -502,28 +502,25 @@ class LiveTrackingApp:
                                 # Check for error states
                                 if hasattr(self.webrtc_ctx.state, 'error'):
                                     st.error(f"Camera Error: {self.webrtc_ctx.state.error}")
-                        else:
-                            st.warning("⚠️ Camera may need to be started. Click on the gray box to start streaming.")
+                    else:
+                        st.warning("⚠️ Camera may need to be started. Click on the gray box to start streaming.")
                 else:
                     # Provide more detailed troubleshooting information
                     st.info("📷 Waiting for camera connection... Make sure to allow camera permissions when prompted.")
                     st.warning("If you've denied permissions, please refresh the page and allow camera access when prompted.")
 
-                        # Provide connection troubleshooting tips
-                        with st.expander("Connection Troubleshooting"):
-                            st.markdown("""
-                            **If camera doesn't work:**
+                    # Provide connection troubleshooting tips
+                    with st.expander("Connection Troubleshooting"):
+                        st.markdown("""
+                        **If camera doesn't work:**
 
-                            1. **Check firewall settings** - Some firewalls block WebRTC connections
-                            2. **Try a different browser** - Chrome, Firefox, Safari work best
-                            3. **Ensure HTTPS** - Browsers require secure context for camera access
-                            4. **Check for VPN** - VPNs can interfere with WebRTC
-                            5. **Click Start button** - If you see a gray box, click its internal start button
-                            6. **Mobile networks** - Some mobile carriers restrict WebRTC
-                            """)
-        else:
-            st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
-            st.info("Try using Chrome, Firefox, or Safari for the best WebRTC support.")
+                        1. **Check firewall settings** - Some firewalls block WebRTC connections
+                        2. **Try a different browser** - Chrome, Firefox, Safari work best
+                        3. **Ensure HTTPS** - Browsers require secure context for camera access
+                        4. **Check for VPN** - VPNs can interfere with WebRTC
+                        5. **Click Start button** - If you see a gray box, click its internal start button
+                        6. **Mobile networks** - Some mobile carriers restrict WebRTC
+                        """)
             except Exception as e:
                 st.error(f"Error initializing camera: {str(e)}")
                 st.info("Please ensure your browser supports WebRTC and camera access is permitted.")
@@ -536,13 +533,13 @@ class LiveTrackingApp:
                 else:
                     st.info("Try using a different browser or check your network connection.")
 
-            # Add a refresh button for mobile users who might have denied permissions
-            # Add a refresh button for mobile users who might have denied permissions
-            st.button("Refresh Camera Permissions")
+                # Add a refresh button for mobile users who might have denied permissions
+                st.button("Refresh Camera Permissions")
 
             # Main loop to update the UI while camera is active
             # Use the thread-safe container to access frame data
-            if self.webrtc_ctx and self.webrtc_ctx.playing:
+            if (self.webrtc_ctx and hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state and
+                hasattr(self.webrtc_ctx.state, 'playing') and self.webrtc_ctx.state.playing):
                 # Get the most recent frame and tracking data from the thread-safe container
                 with global_lock:
                     current_frame = track_container["frame"]
