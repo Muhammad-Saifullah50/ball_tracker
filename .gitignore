@@ -43,8 +43,6 @@ Thumbs.db
 logs/
 
 # Models and config (runtime artifacts)
-models/
-config/
 
 # Coverage reports
 .coverage

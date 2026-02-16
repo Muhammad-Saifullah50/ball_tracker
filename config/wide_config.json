@@ -1,0 +1,24 @@
+{
+  "off_side_distance_m": 0.83,
+  "leg_side_distance_m": 0.83,
+  "off_line_px": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      0
+    ]
+  ],
+  "leg_line_px": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      0
+    ]
+  ]
+}

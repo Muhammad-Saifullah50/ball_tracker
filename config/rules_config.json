@@ -1,0 +1,12 @@
+{
+  "batsman_handedness": "right",
+  "stump_width_tolerance": 1.0,
+  "lbw_strictness": "standard",
+  "edge_sensitivity": 0.7,
+  "confidence_threshold": 0.5,
+  "camera_index": 0,
+  "resolution": [
+    640,
+    480
+  ]
+}
