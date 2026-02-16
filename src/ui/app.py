@@ -2,7 +2,6 @@
 Main application entry point for Cricket Ball Tracker
 """
 import streamlit as st
-import os
 import sys
 from pathlib import Path
 
