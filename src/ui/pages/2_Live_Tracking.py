@@ -466,9 +466,7 @@ class LiveTrackingApp:
                         "playsInline": True,
                         "muted": True
                     },
-                    desired_playing_state=self.is_tracking,  # Explicitly set playing state
-                    # Add timeout for connection attempts
-                    timeout=30  # 30 seconds timeout
+                    desired_playing_state=self.is_tracking  # Explicitly set playing state
                 )
 
                 if self.webrtc_ctx:
@@ -519,8 +517,6 @@ class LiveTrackingApp:
                     st.warning("⚠️ Camera permission was denied. Refresh the page and allow camera access.")
                 elif "device" in error_msg or "camera" in error_msg:
                     st.error("❌ No camera device found. Please check if a camera is connected to your device.")
-                elif "rtc" in error_msg or "webrtc" in error_msg:
-                    st.error("❌ WebRTC connection failed. This may be due to network restrictions.")
                 else:
                     st.info("Try using a different browser or check your network connection.")
 
