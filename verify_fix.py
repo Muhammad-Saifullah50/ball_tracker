@@ -36,11 +36,11 @@ def verify_fixes():
     else:
         fixes_verified.append("❌ Multiple STUN servers not found")
 
-    # Check 4: Added timeout and error handling
-    if 'timeout=30' in content:
-        fixes_verified.append("✅ WebRTC timeout added")
+    # Check 4: Updated WebRTC mode (removed timeout parameter was correct)
+    if 'mode=WebRtcMode.SENDRECV' in content:
+        fixes_verified.append("✅ WebRTC mode updated to SENDRECV")
     else:
-        fixes_verified.append("❌ WebRTC timeout not found")
+        fixes_verified.append("❌ WebRTC mode not updated")
 
     # Check 5: Improved error handling
     if 'Camera Error:' in content and 'Check for error states' in content:

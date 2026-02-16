@@ -416,23 +416,29 @@ class LiveTrackingApp:
                 2. **Browser Compatibility:**
                    - Use Chrome, Firefox, or Safari (Edge sometimes has issues)
                    - Make sure your browser is up-to-date
+                   - Ensure you are using a secure connection (https://)
 
                 3. **Mobile Users:**
                    - Use Chrome (Android) or Safari (iOS)
-                   - Make sure to tap on the gray box to activate the camera
+                   - Tap on the gray box and click the "Start" button inside the video player
+                   - Using rear camera ("environment" facing mode)
 
-                4. **Network:**
+                4. **WebRTC Connection:**
+                   - If you see a gray box with a start button, click it to begin streaming
+                   - This is required for security reasons (user must explicitly allow camera access)
+
+                5. **Network:**
                    - If camera doesn't work, you may be behind a restrictive firewall
                    - Try using a different network if possible
                 """)
 
             st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
             # Use streamlit-webrtc for continuous camera access with WebRTC
-            # Enhanced RTC configuration for better compatibility
+            # Updated to SENDRECV mode to properly get camera feed from browser
             try:
                 self.webrtc_ctx = webrtc_streamer(
                     key="ball-tracking",
-                    mode=WebRtcMode.RECVONLY,  # Only receive video stream
+                    mode=WebRtcMode.SENDRECV,  # Changed from RECVONLY to SENDRECV - browser sends video to Python
                     rtc_configuration=RTCConfiguration({
                         "iceServers": [
                             {"urls": ["stun:stun.l.google.com:19302"]},
@@ -450,13 +456,13 @@ class LiveTrackingApp:
                     ),
                     media_stream_constraints={
                         "video": {
-                            "facingMode": "environment" if self.config else "user",  # Use rear camera on mobile, front on desktop
+                            "facingMode": "environment" if self.config and self.config.camera_index == 1 else "user",  # Use rear camera on mobile (index 1), front on desktop
                             "width": {"ideal": 1280},
                             "height": {"ideal": 720},
                             # Add frame rate constraint for smooth video
                             "frameRate": {"ideal": 30}
                         },
-                        "audio": False
+                        "audio": False  # Not needed for ball tracking
                     },
                     async_processing=True,
                     video_html_attrs={
@@ -465,8 +471,8 @@ class LiveTrackingApp:
                         "autoPlay": True,
                         "playsInline": True,
                         "muted": True
-                    },
-                    desired_playing_state=self.is_tracking  # Explicitly set playing state
+                    }
+                    # Removed desired_playing_state to let user explicitly start the stream
                 )
 
                 if self.webrtc_ctx:
@@ -502,8 +508,10 @@ class LiveTrackingApp:
 
                             1. **Check firewall settings** - Some firewalls block WebRTC connections
                             2. **Try a different browser** - Chrome, Firefox, Safari work best
-                            3. **Ensure HTTPS** - Some browsers require secure context
+                            3. **Ensure HTTPS** - Browsers require secure context for camera access
                             4. **Check for VPN** - VPNs can interfere with WebRTC
+                            5. **Click Start button** - If you see a gray box, click its internal start button
+                            6. **Mobile networks** - Some mobile carriers restrict WebRTC
                             """)
                 else:
                     st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
