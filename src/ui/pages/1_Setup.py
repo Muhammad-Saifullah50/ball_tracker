@@ -20,31 +20,42 @@ from src.detection.stump_detector import StumpDetector
 from src.calibration.pitch_calibrator import PitchCalibrator
 from src.models.session_config import SessionConfig
 
+import threading
 # Import streamlit-webrtc components
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 import av
 
+# Global lock for thread-safe operations between WebRTC thread and Streamlit UI thread for stump detection
+stump_global_lock = threading.Lock()
+stump_track_container = {
+    "last_detection": None,
+    "frame": None
+}
 
-class StumpDetectionProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.detector = StumpDetector()
-        self.last_detection = None
 
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # Convert av.VideoFrame to numpy array
-        img = frame.to_ndarray(format="bgr24")
+def stump_video_frame_callback(frame: av.VideoFrame):
+    """
+    Modern callback approach to process video frames for stump detection with thread safety
+    """
+    # Convert av.VideoFrame to numpy array
+    img = frame.to_ndarray(format="bgr24")
 
-        # For setup purposes, we'll just return the original frame
-        # But we can run detection in the background
-        try:
-            detection = self.detector.detect_stumps(img)
-            self.last_detection = detection
-        except Exception as e:
-            # Detection failed, continue with original frame but log the error
-            pass
+    # For setup purposes, we'll just return the original frame
+    # But we can run detection in the background
+    detector = StumpDetector()
+    try:
+        detection = detector.detect_stumps(img)
+    except Exception as e:
+        # Detection failed, continue with original frame but log the error
+        detection = None
 
-        # Return the frame as-is to avoid video processing issues
-        return img
+    # Store results in thread-safe container
+    with stump_global_lock:
+        stump_track_container["frame"] = img.copy()
+        stump_track_container["last_detection"] = detection
+
+    # Return the original frame for display
+    return frame
 
 
 def main():
@@ -135,17 +146,20 @@ def main():
             st.markdown("**Or use live camera:**")
             st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
             # Use streamlit-webrtc for live camera access with WebRTC
+            # Updated to SENDRECV mode and modern video_frame_callback approach
             webrtc_ctx = webrtc_streamer(
                 key="stump-detection",
-                mode=WebRtcMode.RECVONLY,  # Only receive video stream
+                mode=WebRtcMode.SENDRECV,  # Changed from RECVONLY to SENDRECV - browser sends video to Python
                 rtc_configuration=RTCConfiguration({
                     "iceServers": [
                         {"urls": ["stun:stun.l.google.com:19302"]},
-                        {"urls": ["stun:stun.cloudflare.com:3478"]}
+                        {"urls": ["stun:stun.cloudflare.com:3478"]},
+                        {"urls": ["stun:stun.stunprotocol.org:3478"]},  # Additional STUN server
+                        {"urls": ["stun:stun.freeswitch.org:3478"]}      # Backup STUN server
                     ],
                     "iceCandidatePoolSize": 10
                 }),
-                video_processor_factory=StumpDetectionProcessor,
+                video_frame_callback=stump_video_frame_callback,
                 media_stream_constraints={
                     "video": {
                         "facingMode": "environment",  # Use rear camera on mobile
@@ -161,19 +175,93 @@ def main():
                     "autoPlay": True,
                     "playsInline": True,
                     "muted": True
-                }
+                },
+                desired_playing_state=True  # Start playing when the component is ready, but still requires user gesture
             )
             if webrtc_ctx:
-                # Check if the stream is active (checking for different possible attributes)
-                if hasattr(webrtc_ctx, 'state') and hasattr(webrtc_ctx.state, 'playing'):
-                    if webrtc_ctx.state.playing:
-                        st.success("Camera connected! If you see a gray box, tap on it to start the video. Point it at the stumps.")
-                    else:
-                        st.info("Waiting for camera connection... If permissions were denied, refresh the page and allow camera access.")
+                # Check if the stream is active with better error handling
+                # The webrtc_ctx has a playing property that indicates if the stream is active
+                if hasattr(webrtc_ctx, 'playing') and webrtc_ctx.playing:
+                    st.success("✅ Camera connected! If you see a gray box, tap on it to start the video. Point it at the stumps.")
+                    # Additional message for gray box issue
+                    st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
                 elif hasattr(webrtc_ctx, 'video_receiver') and webrtc_ctx.video_receiver:
-                    st.success("Camera connected! If you see a gray box, tap on it to start the video. Point it at the stumps.")
+                    st.success("✅ Camera stream established! Point it at the stumps.")
                 else:
-                    st.info("Waiting for camera connection... Make sure to allow camera permissions when prompted.")
+                    # Check if there are connection issues
+                    if hasattr(webrtc_ctx, 'state') and webrtc_ctx.state:
+                        if hasattr(webrtc_ctx.state, 'signalingState'):
+                            if webrtc_ctx.state.signalingState == "closed":
+                                st.error("❌ Camera connection closed. Network issue or browser incompatible.")
+                            elif webrtc_ctx.state.signalingState == "have-remote-offer":
+                                st.info("📡 Negotiating camera connection...")
+                        else:
+                            st.warning("⚠️ Camera connected but video stream not playing. Try clicking on the gray box above.")
+                            # Check for error states
+                            if hasattr(webrtc_ctx.state, 'error'):
+                                st.error(f"Camera Error: {webrtc_ctx.state.error}")
+                    else:
+                        st.warning("⚠️ Camera may need to be started. Click on the gray box to start streaming.")
+            else:
+                # Provide more detailed troubleshooting information
+                st.info("📷 Waiting for camera connection... Make sure to allow camera permissions when prompted.")
+                st.warning("If you've denied permissions, please refresh the page and allow camera access when prompted.")
+
+                # Provide connection troubleshooting tips
+                with st.expander(" troubleshoot camera issues"):
+                    st.markdown("""
+                    ### Troubleshooting Camera Issues:
+
+                    1. **Browser Permissions:**
+                       - Check if camera access is blocked (look for camera icon in address bar)
+                       - Click on the icon and select "Always allow" for camera
+                       - Refresh the page after granting permissions
+
+                    2. **Browser Compatibility:**
+                       - Use Chrome, Firefox, or Safari (Edge sometimes has issues)
+                       - Make sure your browser is up-to-date
+                       - Ensure you are using a secure connection (https://)
+
+                    3. **Mobile Users:**
+                       - Use Chrome (Android) or Safari (iOS)
+                       - Tap on the gray box and click the "Start" button inside the video player
+                       - Using rear camera ("environment" facing mode)
+
+                    4. **WebRTC Connection:**
+                       - If you see a gray box with a start button, click it to begin streaming
+                       - This is required for security reasons (user must explicitly allow camera access)
+
+                    5. **Network:**
+                       - If camera doesn't work, you may be behind a restrictive firewall
+                       - Try using a different network if possible
+                    """)
+
+                # Provide connection troubleshooting tips
+                with st.expander("Connection Troubleshooting"):
+                    st.markdown("""
+                    **If camera doesn't work:**
+
+                    1. **Check firewall settings** - Some firewalls block WebRTC connections
+                    2. **Try a different browser** - Chrome, Firefox, Safari work best
+                    3. **Ensure HTTPS** - Browsers require secure context for camera access
+                    4. **Check for VPN** - VPNs can interfere with WebRTC
+                    5. **Click Start button** - If you see a gray box, click its internal start button
+                    6. **Mobile networks** - Some mobile carriers restrict WebRTC
+                    """)
+            else:
+                st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
+                st.info("Try using Chrome, Firefox, or Safari for the best WebRTC support.")
+        except Exception as e:
+            st.error(f"Error initializing camera: {str(e)}")
+            st.info("Please ensure your browser supports WebRTC and camera access is permitted.")
+            # Provide more specific error messages
+            error_msg = str(e).lower()
+            if "permission" in error_msg:
+                st.warning("⚠️ Camera permission was denied. Refresh the page and allow camera access.")
+            elif "device" in error_msg or "camera" in error_msg:
+                st.error("❌ No camera device found. Please check if a camera is connected to your device.")
+            else:
+                st.info("Try using a different browser or check your network connection.")
 
             # Add a refresh button for mobile users who might have denied permissions
             st.button("Refresh Camera Permissions")
@@ -222,20 +310,50 @@ def main():
                 st.warning("Could not detect stumps. Please use a clearer image.")
 
         # Process live camera stream if available
-        elif webrtc_ctx and webrtc_ctx.video_processor:
+        elif webrtc_ctx and webrtc_ctx.playing:
             st.info("Point your camera at the stumps. Click the 'Capture Frame' button below when ready.")
 
             # Create a button to capture the current frame for processing
             if st.button("Capture Frame for Stump Detection"):
-                # This will use the last frame from the video stream
-                # Since we can't directly access the video stream frame in this context
-                # we'll inform the user that they need to take a picture manually
-                st.warning("For now, please take a screenshot of the live camera feed and upload it above, or use the photo capture option.")
+                # Get the most recent detection from the thread-safe container
+                with stump_global_lock:
+                    last_detection = stump_track_container["last_detection"]
+                    current_frame = stump_track_container["frame"]
 
-                # In a complete implementation with WebRTC, we would capture the current frame
-                # when the user clicks the button and process it for stump detection
-                # This requires more advanced WebRTC handling which is a limitation of this approach
-                # without a more complex implementation
+                if current_frame is not None and last_detection is not None:
+                    # Convert frame to PIL image for display
+                    if current_frame is not None:
+                        pil_image = Image.fromarray(current_frame)
+                        st.image(pil_image, caption="Captured Frame", use_column_width=True)
+
+                        if last_detection and last_detection.confidence > 0.5:  # Add confidence threshold
+                            st.success("Stumps detected!")
+                            st.json({
+                                "off_stump": last_detection.off_stump_px,
+                                "middle_stump": last_detection.middle_stump_px,
+                                "leg_stump": last_detection.leg_stump_px,
+                                "confidence": last_detection.confidence
+                            })
+
+                            # Update config with detected stumps
+                            config.batting_stumps = last_detection
+
+                            # Calculate pixels per meter based on known pitch length
+                            config.pitch_config.pixels_per_meter = 100.0
+                            if last_detection.off_stump_px and last_detection.leg_stump_px:
+                                # Calculate distance between stumps and use that to estimate pixels per meter
+                                stump_distance_px = ((last_detection.off_stump_px[0] - last_detection.leg_stump_px[0])**2 +
+                                                   (last_detection.off_stump_px[1] - last_detection.leg_stump_px[1])**2)**0.5
+                                # Standard cricket stumps are 8.8 inches apart = 0.224 meters
+                                config.pitch_config.pixels_per_meter = stump_distance_px / 0.224
+                        else:
+                            st.warning("Could not detect stumps or low confidence. Please adjust camera and try again.")
+                else:
+                    # In a complete implementation with WebRTC, we would capture the current frame
+                    # when the user clicks the button and process it for stump detection
+                    # This requires more advanced WebRTC handling which is a limitation of this approach
+                    # without a more complex implementation
+                    st.warning("For now, please take a screenshot of the live camera feed and upload it above, or use the photo capture option.")
 
         # Provide help text if neither input is provided
         else:

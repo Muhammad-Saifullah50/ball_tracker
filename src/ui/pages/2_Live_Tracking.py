@@ -12,6 +12,15 @@ from collections import deque
 import sys
 from pathlib import Path
 
+# Global lock for thread-safe operations between WebRTC thread and Streamlit UI thread
+global_lock = threading.Lock()
+track_container = {
+    "detection": None,
+    "trajectory": None,
+    "frame": None,
+    "current_frame_number": 0
+}
+
 # Add the project root directory to the Python path if not already there
 project_root = Path(__file__).parent.parent.parent
 project_root_str = str(project_root)
@@ -36,57 +45,52 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 import av
 
 
-class BallTrackingProcessor(VideoProcessorBase):
-    def __init__(self, detector, tracker, segmenter, config):
-        self.ball_detector = detector
-        self.ball_tracker = tracker
-        self.delivery_segmenter = segmenter
-        self.config = config
-        self.current_frame = None
-        self.current_detection = None
-        self.current_trajectory = None
+def video_frame_callback(frame: av.VideoFrame, detector, tracker, segmenter, config):
+    """
+    Modern callback approach to process video frames with thread safety
+    """
+    # Convert av.VideoFrame to numpy array
+    img = frame.to_ndarray(format="bgr24")
 
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # Convert av.VideoFrame to numpy array
-        img = frame.to_ndarray(format="bgr24")
+    # Perform ball detection
+    try:
+        # Create a triplet of frames for the detector (using same frame for now)
+        frame_triplet = (img, img, img)
+        detection = detector.detect(frame_triplet)
+    except Exception as e:
+        # If detection fails, continue with no detection
+        detection = None
 
-        # Store the frame for access by the UI
-        self.current_frame = img.copy()
+    # Update tracker
+    tracker.update(detection)
 
-        # Perform ball detection
-        try:
-            # Create a triplet of frames for the detector (using same frame for now)
-            frame_triplet = (img, img, img)
-            detection = self.ball_detector.detect(frame_triplet)
-            self.current_detection = detection
-        except:
-            # If detection fails, continue with no detection
-            self.current_detection = None
+    # Detect impacts if config is available
+    if config:
+        from src.calibration.pitch_calibrator import PitchCalibrator
+        calibrator = PitchCalibrator(
+            config.pitch_config,
+            config.batting_stumps
+        )
+        tracker.detect_impact(threshold=30.0, calibrator=calibrator, config=config)
+    else:
+        tracker.detect_impact(threshold=30.0)  # Fallback without classification
 
-        # Update tracker
-        self.ball_tracker.update(self.current_detection)
+    # Update segmenter
+    segmenter.update(detection)
 
-        # Detect impacts if config is available
-        if self.config:
-            from src.calibration.pitch_calibrator import PitchCalibrator
-            calibrator = PitchCalibrator(
-                self.config.pitch_config,
-                self.config.batting_stumps
-            )
-            self.ball_tracker.detect_impact(threshold=30.0, calibrator=calibrator, config=self.config)
-        else:
-            self.ball_tracker.detect_impact(threshold=30.0)  # Fallback without classification
+    # Get trajectory
+    pixels_per_meter = config.pitch_config.pixels_per_meter if config else None
+    trajectory = tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
 
-        # Update segmenter
-        self.delivery_segmenter.update(self.current_detection)
+    # Store results in thread-safe container
+    with global_lock:
+        track_container["frame"] = img.copy()
+        track_container["detection"] = detection
+        track_container["trajectory"] = trajectory
+        track_container["current_frame_number"] += 1
 
-        # Get trajectory
-        pixels_per_meter = self.config.pitch_config.pixels_per_meter if self.config else None
-        self.current_trajectory = self.ball_tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
-
-        # Return the original frame (we can also return a processed frame with overlays if needed)
-        # Returning the original frame for display in the UI
-        return img
+    # Return the original frame for display
+    return frame
 
 
 class LiveTrackingApp:
@@ -434,7 +438,7 @@ class LiveTrackingApp:
 
             st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
             # Use streamlit-webrtc for continuous camera access with WebRTC
-            # Updated to SENDRECV mode to properly get camera feed from browser
+            # Updated to SENDRECV mode and modern video_frame_callback approach
             try:
                 self.webrtc_ctx = webrtc_streamer(
                     key="ball-tracking",
@@ -448,7 +452,8 @@ class LiveTrackingApp:
                         ],
                         "iceCandidatePoolSize": 10
                     }),
-                    video_processor_factory=lambda: BallTrackingProcessor(
+                    video_frame_callback=lambda frame: video_frame_callback(
+                        frame,
                         self.ball_detector,
                         self.ball_tracker,
                         self.delivery_segmenter,
@@ -456,7 +461,7 @@ class LiveTrackingApp:
                     ),
                     media_stream_constraints={
                         "video": {
-                            "facingMode": "environment" if self.config and self.config.camera_index == 1 else "user",  # Use rear camera on mobile (index 1), front on desktop
+                            "facingMode": "environment",  # Use rear camera by default for better cricket tracking
                             "width": {"ideal": 1280},
                             "height": {"ideal": 720},
                             # Add frame rate constraint for smooth video
@@ -471,21 +476,22 @@ class LiveTrackingApp:
                         "autoPlay": True,
                         "playsInline": True,
                         "muted": True
-                    }
-                    # Removed desired_playing_state to let user explicitly start the stream
+                    },
+                    desired_playing_state=True  # Start playing when the component is ready, but still requires user gesture
                 )
 
                 if self.webrtc_ctx:
                     # Check if the stream is active with better error handling
-                    if hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state:
-                        if hasattr(self.webrtc_ctx.state, 'playing') and self.webrtc_ctx.state.playing:
-                            st.success("✅ Camera connected! Ball tracking is active.")
-                            # Additional message for gray box issue
-                            st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
-                        elif hasattr(self.webrtc_ctx, 'video_receiver') and self.webrtc_ctx.video_receiver:
-                            st.success("✅ Camera stream established! Ball tracking is active.")
-                        else:
-                            # Check if there are connection issues
+                    # The webrtc_ctx has a playing property that indicates if the stream is active
+                    if hasattr(self.webrtc_ctx, 'playing') and self.webrtc_ctx.playing:
+                        st.success("✅ Camera connected! Ball tracking is active.")
+                        # Additional message for gray box issue
+                        st.info("💡 If you see a gray box instead of video, click/tap on it to activate the camera feed.")
+                    elif hasattr(self.webrtc_ctx, 'video_receiver') and self.webrtc_ctx.video_receiver:
+                        st.success("✅ Camera stream established! Ball tracking is active.")
+                    else:
+                        # Check if there are connection issues
+                        if hasattr(self.webrtc_ctx, 'state') and self.webrtc_ctx.state:
                             if hasattr(self.webrtc_ctx.state, 'signalingState'):
                                 if self.webrtc_ctx.state.signalingState == "closed":
                                     st.error("❌ Camera connection closed. Network issue or browser incompatible.")
@@ -496,10 +502,12 @@ class LiveTrackingApp:
                                 # Check for error states
                                 if hasattr(self.webrtc_ctx.state, 'error'):
                                     st.error(f"Camera Error: {self.webrtc_ctx.state.error}")
-                    else:
-                        # Provide more detailed troubleshooting information
-                        st.info("📷 Waiting for camera connection... Make sure to allow camera permissions when prompted.")
-                        st.warning("If you've denied permissions, please refresh the page and allow camera access when prompted.")
+                        else:
+                            st.warning("⚠️ Camera may need to be started. Click on the gray box to start streaming.")
+                else:
+                    # Provide more detailed troubleshooting information
+                    st.info("📷 Waiting for camera connection... Make sure to allow camera permissions when prompted.")
+                    st.warning("If you've denied permissions, please refresh the page and allow camera access when prompted.")
 
                         # Provide connection troubleshooting tips
                         with st.expander("Connection Troubleshooting"):
@@ -513,9 +521,9 @@ class LiveTrackingApp:
                             5. **Click Start button** - If you see a gray box, click its internal start button
                             6. **Mobile networks** - Some mobile carriers restrict WebRTC
                             """)
-                else:
-                    st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
-                    st.info("Try using Chrome, Firefox, or Safari for the best WebRTC support.")
+        else:
+            st.warning("⚠️ Camera streamer could not be initialized. Check browser compatibility.")
+            st.info("Try using Chrome, Firefox, or Safari for the best WebRTC support.")
             except Exception as e:
                 st.error(f"Error initializing camera: {str(e)}")
                 st.info("Please ensure your browser supports WebRTC and camera access is permitted.")
@@ -529,27 +537,31 @@ class LiveTrackingApp:
                     st.info("Try using a different browser or check your network connection.")
 
             # Add a refresh button for mobile users who might have denied permissions
+            # Add a refresh button for mobile users who might have denied permissions
             st.button("Refresh Camera Permissions")
 
-            if self.webrtc_ctx and self.webrtc_ctx.video_processor:
-                # Check if the video processor has a current frame
-                if hasattr(self.webrtc_ctx.video_processor, 'current_frame') and self.webrtc_ctx.video_processor.current_frame is not None:
-                    # Get the frame from the WebRTC processor
-                    frame = self.webrtc_ctx.video_processor.current_frame
-                    self.current_frame = frame.copy()
-                    self.current_frame_number += 1
+            # Main loop to update the UI while camera is active
+            # Use the thread-safe container to access frame data
+            if self.webrtc_ctx and self.webrtc_ctx.playing:
+                # Get the most recent frame and tracking data from the thread-safe container
+                with global_lock:
+                    current_frame = track_container["frame"]
+                    current_detection = track_container["detection"]
+                    current_trajectory = track_container["trajectory"]
+                    current_frame_number = track_container["current_frame_number"]
 
+                # Update our local tracking variables
+                self.current_frame = current_frame
+                self.current_detection = current_detection
+                self.current_trajectory = current_trajectory
+                self.current_frame_number = current_frame_number
+
+                if current_frame is not None:
                     # Add current frame to replay buffer
-                    self.replay_buffer.add_frame(frame.copy())
-
-                    # Update our local tracking variables from the processor
-                    if hasattr(self.webrtc_ctx.video_processor, 'current_detection'):
-                        self.current_detection = self.webrtc_ctx.video_processor.current_detection
-                    if hasattr(self.webrtc_ctx.video_processor, 'current_trajectory'):
-                        self.current_trajectory = self.webrtc_ctx.video_processor.current_trajectory
+                    self.replay_buffer.add_frame(current_frame.copy())
 
                     # Draw overlays on current frame
-                    display_frame = frame.copy()
+                    display_frame = current_frame.copy()
 
                     if self.pitch_calibrator:
                         display_frame = self.draw_overlays(
@@ -586,13 +598,41 @@ class LiveTrackingApp:
                     )
                 else:
                     # Show a more descriptive message when frame is not available yet
-                    video_placeholder.info("📡 Waiting for camera stream... Video processor active, frame should appear shortly.")
+                    video_placeholder.info("📡 Waiting for camera stream... Video receiver active, frame should appear shortly.")
                     st.info("The camera is connected but waiting for the first frame. This may take a few seconds.")
 
-                    # Update status panels when frame is not available yet
-                    detection_status.info("🟡 Waiting for camera feed...")
+                # Update status panels with current values
+                if self.current_detection:
+                    detection_status.info(f"🟢 Detected - Confidence: {self.current_detection.confidence:.2f}")
+                else:
+                    detection_status.warning("🟡 No ball detected")
+
+                if self.current_trajectory:
+                    tracking_info.info(f"""
+                    **Trajectory:**
+                    - Points: {len(self.current_trajectory.detections)}
+                    - Speed: {self.current_trajectory.speed_kmh or 'N/A'} px/s
+                    - Bounce: {'Yes' if self.current_trajectory.bounce_point else 'No'}
+                    """)
+                else:
                     tracking_info.info("No trajectory data")
-                    delivery_status.info("State: idle")
+
+                # Get delivery state from the segmenter
+                delivery_state = self.delivery_segmenter.update(self.current_detection)
+                delivery_status.info(f"State: {delivery_state}")
+
+                # Auto-evaluate wide and caught behind decisions when delivery is completed
+                if delivery_state == "complete" and self.current_trajectory:
+                    self.evaluate_wide_auto()
+                    self.evaluate_caught_behind_auto()
+
+                    # Also save the trajectory with decisions to replay buffer
+                    if self.current_lbw_decision:
+                        self.current_trajectory.lbw_decision = self.current_lbw_decision
+                    if self.current_wide_decision:
+                        self.current_trajectory.wide_decision = self.current_wide_decision
+                    if self.current_caught_behind_decision:
+                        self.current_trajectory.caught_behind_decision = self.current_caught_behind_decision
             else:
                 # Show camera input area but no video stream yet
                 video_placeholder.info("📷 Waiting for camera stream... Please allow camera access when prompted.")
