@@ -96,7 +96,7 @@ class LiveTrackingApp:
 
         # Components
         self.ball_detector = BallDetector()
-        self.ball_tracker = BallTracker(fps=30.0)
+        self.ball_tracker = BallTracker(fps=15.0)  # Match mobile frame rate
         self.delivery_segmenter = DeliverySegmenter()
         self.pitch_calibrator = None
         self.lbw_engine = None
@@ -127,7 +127,7 @@ class LiveTrackingApp:
             return False
 
     def draw_overlays(self, frame, detection, trajectory, calibrator):
-        """Draws visual feedback on frames using PIL."""
+        """Draws visual feedback on frames using PIL - lightweight for mobile."""
         if not isinstance(frame, Image.Image):
             if frame.dtype != np.uint8:
                 frame = frame.astype(np.uint8)
@@ -137,16 +137,18 @@ class LiveTrackingApp:
 
         draw = ImageDraw.Draw(pil_image, "RGBA")
 
-        # Ball Detection Overlay
+        # Ball Detection Overlay - simplified for mobile
         if detection:
             x, y = int(detection.x), int(detection.y)
-            draw.ellipse([x-8, y-8, x+8, y+8], fill=(0, 255, 0), outline=(0, 255, 0), width=2)
+            draw.ellipse([x-6, y-6, x+6, y+6], fill=(0, 255, 0, 180), outline=(0, 255, 0), width=2)
 
-        # Trajectory Overlay
+        # Trajectory Overlay - limit points for mobile performance
         if trajectory and len(trajectory.detections) > 1:
-            points = [(int(d.x), int(d.y)) for d in trajectory.detections]
+            # Only draw last 15 points to reduce rendering load
+            recent_detections = trajectory.detections[-15:]
+            points = [(int(d.x), int(d.y)) for d in recent_detections]
             for i in range(len(points) - 1):
-                draw.line([points[i], points[i+1]], fill=(255, 0, 0), width=2)
+                draw.line([points[i], points[i+1]], fill=(255, 0, 0, 200), width=2)
 
         return np.array(pil_image)
 
@@ -170,13 +172,16 @@ class LiveTrackingApp:
     def run(self):
         """Main UI logic."""
         st.title("🏏 Cricket Ball Tracker - Live Tracking")
-        
+
+        # Mobile performance notice
+        st.info("📱 Optimized for mobile devices (480x360 @ 15fps)")
+
         if not self.load_config():
             st.stop()
 
         if self.config:
             self.pitch_calibrator = PitchCalibrator(
-                self.config.pitch_config, 
+                self.config.pitch_config,
                 self.config.batting_stumps
             )
 
@@ -197,26 +202,46 @@ class LiveTrackingApp:
 
         # Placeholder for the processed video
         video_placeholder = st.empty()
-        
-        # WebRTC Component (Bridge between Browser and Server)
+
+        # WebRTC Component - Optimized for low-end mobile (Galaxy J3 Pro 2016)
         self.webrtc_ctx = webrtc_streamer(
             key="ball-tracking",
-            mode=WebRtcMode.SENDRECV, # Browser sends video to server
+            mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTCConfiguration({
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+                "iceServers": [
+                    {"urls": ["stun:stun.l.google.com:19302"]},
+                    {"urls": ["stun:stun.cloudflare.com:3478"]},
+                    {"urls": ["stun:stun.stunprotocol.org:3478"]},
+                    {"urls": ["stun:stun.services.mozilla.com:3478"]}
+                ],
+                "iceCandidatePoolSize": 10,
+                "iceTransportPolicy": "all"
             }),
             video_frame_callback=lambda frame: video_frame_callback(
-                frame, 
-                self.ball_detector, 
-                self.ball_tracker, 
-                self.delivery_segmenter, 
+                frame,
+                self.ball_detector,
+                self.ball_tracker,
+                self.delivery_segmenter,
                 self.config
             ),
             media_stream_constraints={
-                "video": {"facingMode": "environment"}, # Rear camera
+                "video": {
+                    "facingMode": "environment",
+                    "width": {"ideal": 480, "min": 320, "max": 640},
+                    "height": {"ideal": 360, "min": 240, "max": 480},
+                    "frameRate": {"ideal": 15, "min": 10, "max": 20},
+                    "aspectRatio": {"ideal": 1.333}
+                },
                 "audio": False
             },
-            async_processing=True
+            async_processing=True,
+            video_html_attrs={
+                "style": {"width": "100%", "maxWidth": "480px", "height": "auto"},
+                "controls": False,
+                "autoPlay": True,
+                "playsInline": True,
+                "muted": True
+            }
         )
 
         # UI Loop - Pull data from the WebRTC thread
@@ -229,23 +254,23 @@ class LiveTrackingApp:
 
             if self.current_frame is not None:
                 display_frame = self.current_frame.copy()
-                
+
                 # Apply Overlays
                 if self.is_tracking and self.pitch_calibrator:
                     display_frame = self.draw_overlays(
-                        display_frame, 
-                        self.current_detection, 
-                        self.current_trajectory, 
+                        display_frame,
+                        self.current_detection,
+                        self.current_trajectory,
                         self.pitch_calibrator
                     )
-                
+
                 # Convert BGR (OpenCV) to RGB (Streamlit)
                 display_frame_rgb = display_frame[:, :, ::-1]
-                
+
                 video_placeholder.image(
-                    display_frame_rgb, 
-                    caption="Processed Live Feed",
-                    channels="RGB", 
+                    display_frame_rgb,
+                    caption="Live Feed (Mobile Optimized)",
+                    channels="RGB",
                     use_column_width=True
                 )
 

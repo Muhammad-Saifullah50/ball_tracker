@@ -146,38 +146,41 @@ def main():
             st.markdown("**Or use live camera:**")
             st.info("💡 Make sure to allow camera permissions when prompted. On mobile, use Chrome or Safari for best results.")
             # Use streamlit-webrtc for live camera access with WebRTC
-            # Updated to SENDRECV mode and modern video_frame_callback approach
+            # Optimized for low-end mobile devices (Galaxy J3 Pro 2016)
             try:
                 webrtc_ctx = webrtc_streamer(
                     key="stump-detection",
-                    mode=WebRtcMode.SENDRECV,  # Changed from RECVONLY to SENDRECV - browser sends video to Python
+                    mode=WebRtcMode.SENDRECV,
                     rtc_configuration=RTCConfiguration({
                         "iceServers": [
                             {"urls": ["stun:stun.l.google.com:19302"]},
                             {"urls": ["stun:stun.cloudflare.com:3478"]},
-                            {"urls": ["stun:stun.stunprotocol.org:3478"]},  # Additional STUN server
-                            {"urls": ["stun:stun.freeswitch.org:3478"]}      # Backup STUN server
+                            {"urls": ["stun:stun.stunprotocol.org:3478"]},
+                            {"urls": ["stun:stun.services.mozilla.com:3478"]}
                         ],
-                        "iceCandidatePoolSize": 10
+                        "iceCandidatePoolSize": 10,
+                        "iceTransportPolicy": "all"
                     }),
                     video_frame_callback=stump_video_frame_callback,
                     media_stream_constraints={
                         "video": {
-                            "facingMode": "environment",  # Use rear camera on mobile
-                            "width": {"ideal": 1280},
-                            "height": {"ideal": 720}
+                            "facingMode": "environment",
+                            "width": {"ideal": 480, "min": 320, "max": 640},
+                            "height": {"ideal": 360, "min": 240, "max": 480},
+                            "frameRate": {"ideal": 15, "min": 10, "max": 20},
+                            "aspectRatio": {"ideal": 1.333}
                         },
                         "audio": False
                     },
                     async_processing=True,
                     video_html_attrs={
-                        "style": {"width": "100%", "maxWidth": "600px", "height": "auto", "objectFit": "cover"},
+                        "style": {"width": "100%", "maxWidth": "480px", "height": "auto", "objectFit": "cover"},
                         "controls": False,
                         "autoPlay": True,
                         "playsInline": True,
                         "muted": True
                     },
-                    desired_playing_state=True  # Start playing when the component is ready, but still requires user gesture
+                    desired_playing_state=True
                 )
             except Exception as e:
                 st.error(f"Error initializing camera: {str(e)}")
