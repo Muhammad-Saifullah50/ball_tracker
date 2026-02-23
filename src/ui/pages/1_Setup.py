@@ -165,9 +165,9 @@ def main():
                     media_stream_constraints={
                         "video": {
                             "facingMode": "environment",
-                            "width": {"ideal": 480, "min": 320, "max": 640},
-                            "height": {"ideal": 360, "min": 240, "max": 480},
-                            "frameRate": {"ideal": 15, "min": 10, "max": 20},
+                            "width": {"ideal": 320, "min": 240, "max": 480},
+                            "height": {"ideal": 240, "min": 180, "max": 360},
+                            "frameRate": {"ideal": 10, "min": 8, "max": 15},
                             "aspectRatio": {"ideal": 1.333}
                         },
                         "audio": False

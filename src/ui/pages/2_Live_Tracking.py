@@ -19,7 +19,8 @@ track_container = {
     "detection": None,
     "trajectory": None,
     "frame": None,
-    "current_frame_number": 0
+    "current_frame_number": 0,
+    "frame_skip_counter": 0  # For frame skipping on mobile
 }
 
 # Project Path Setup
@@ -49,40 +50,50 @@ import av
 def video_frame_callback(frame: av.VideoFrame, detector, tracker, segmenter, config):
     """
     Processes video frames in the background WebRTC thread.
+    Mobile optimization: Process every 2nd frame only.
     """
     img = frame.to_ndarray(format="bgr24")
 
-    # Detection Logic
-    try:
-        # Triplet for movement detection logic
-        frame_triplet = (img, img, img)
-        detection = detector.detect(frame_triplet)
-    except Exception:
-        detection = None
+    # Frame skipping for mobile performance - process every 2nd frame
+    with global_lock:
+        track_container["frame_skip_counter"] += 1
+        should_process = track_container["frame_skip_counter"] % 2 == 0
 
-    # Tracker Updates
-    tracker.update(detection)
+    if should_process:
+        # Detection Logic
+        try:
+            # Triplet for movement detection logic
+            frame_triplet = (img, img, img)
+            detection = detector.detect(frame_triplet)
+        except Exception:
+            detection = None
 
-    # Impact Detection
-    if config:
-        calibrator = PitchCalibrator(config.pitch_config, config.batting_stumps)
-        tracker.detect_impact(threshold=30.0, calibrator=calibrator, config=config)
-    else:
-        tracker.detect_impact(threshold=30.0)
+        # Tracker Updates
+        tracker.update(detection)
 
-    # Segmenter Updates
-    segmenter.update(detection)
+        # Impact Detection
+        if config:
+            calibrator = PitchCalibrator(config.pitch_config, config.batting_stumps)
+            tracker.detect_impact(threshold=30.0, calibrator=calibrator, config=config)
+        else:
+            tracker.detect_impact(threshold=30.0)
 
-    # Trajectory Calculation
-    pixels_per_meter = config.pitch_config.pixels_per_meter if config else None
-    trajectory = tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
+        # Segmenter Updates
+        segmenter.update(detection)
 
-    # Thread-safe update to global container
+        # Trajectory Calculation
+        pixels_per_meter = config.pitch_config.pixels_per_meter if config else None
+        trajectory = tracker.get_trajectory(pixels_per_meter=pixels_per_meter)
+
+        # Thread-safe update to global container
+        with global_lock:
+            track_container["detection"] = detection
+            track_container["trajectory"] = trajectory
+            track_container["current_frame_number"] += 1
+
+    # Always update frame for display (even if not processing)
     with global_lock:
         track_container["frame"] = img.copy()
-        track_container["detection"] = detection
-        track_container["trajectory"] = trajectory
-        track_container["current_frame_number"] += 1
 
     return frame
 
@@ -96,7 +107,7 @@ class LiveTrackingApp:
 
         # Components
         self.ball_detector = BallDetector()
-        self.ball_tracker = BallTracker(fps=15.0)  # Match mobile frame rate
+        self.ball_tracker = BallTracker(fps=10.0)  # Match mobile frame rate
         self.delivery_segmenter = DeliverySegmenter()
         self.pitch_calibrator = None
         self.lbw_engine = None
@@ -174,7 +185,7 @@ class LiveTrackingApp:
         st.title("🏏 Cricket Ball Tracker - Live Tracking")
 
         # Mobile performance notice
-        st.info("📱 Optimized for mobile devices (480x360 @ 15fps)")
+        st.info("📱 Ultra-low mode for Galaxy J3 Pro (320x240 @ 10fps, processing every 2nd frame)")
 
         if not self.load_config():
             st.stop()
@@ -227,9 +238,9 @@ class LiveTrackingApp:
             media_stream_constraints={
                 "video": {
                     "facingMode": "environment",
-                    "width": {"ideal": 480, "min": 320, "max": 640},
-                    "height": {"ideal": 360, "min": 240, "max": 480},
-                    "frameRate": {"ideal": 15, "min": 10, "max": 20},
+                    "width": {"ideal": 320, "min": 240, "max": 480},
+                    "height": {"ideal": 240, "min": 180, "max": 360},
+                    "frameRate": {"ideal": 10, "min": 8, "max": 15},
                     "aspectRatio": {"ideal": 1.333}
                 },
                 "audio": False
